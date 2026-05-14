@@ -1,5 +1,7 @@
 import { App, Modal, Setting, TFile } from "obsidian";
 
+export type PdfParserProvider = "mineru" | "mathpix";
+
 interface FolderNode {
   name: string;
   path: string;
@@ -19,18 +21,19 @@ interface MutableFolderNode {
 export class PdfQueueModal extends Modal {
   private readonly files: TFile[];
   private readonly filesByPath: Map<string, TFile>;
-  private readonly onSubmit: (files: TFile[]) => void;
+  private readonly onSubmit: (files: TFile[], provider: PdfParserProvider) => void;
   private readonly selectedPaths = new Set<string>();
   private readonly collapsedFolders = new Set<string>();
   private readonly treeRoot: FolderNode;
 
   private searchQuery = "";
+  private selectedProvider: PdfParserProvider = "mineru";
   private treeContainerEl!: HTMLElement;
   private queueTitleEl!: HTMLElement;
   private queueContainerEl!: HTMLElement;
   private startButtonEl!: HTMLButtonElement;
 
-  constructor(app: App, files: TFile[], onSubmit: (files: TFile[]) => void) {
+  constructor(app: App, files: TFile[], onSubmit: (files: TFile[], provider: PdfParserProvider) => void) {
     super(app);
     this.files = [...files].sort((a, b) => a.path.localeCompare(b.path));
     this.filesByPath = new Map(this.files.map((file) => [file.path, file]));
@@ -54,6 +57,20 @@ export class PdfQueueModal extends Modal {
           this.searchQuery = value.trim().toLowerCase();
           this.render();
         })
+      );
+
+    new Setting(contentEl)
+      .setName("解析方式")
+      .setDesc("本次队列统一使用该方式解析")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("mineru", "MinerU")
+          .addOption("mathpix", "Mathpix")
+          .setValue(this.selectedProvider)
+          .onChange((value) => {
+            this.selectedProvider = value as PdfParserProvider;
+            this.renderQueue();
+          })
       );
 
     const layoutEl = contentEl.createDiv({ cls: "mineru-queue-layout" });
@@ -81,7 +98,7 @@ export class PdfQueueModal extends Modal {
         return;
       }
       this.close();
-      this.onSubmit(selectedFiles);
+      this.onSubmit(selectedFiles, this.selectedProvider);
     });
 
     this.queueTitleEl = queueHeaderEl.createEl("h4", { text: "待转换队列（0）", cls: "mineru-queue-title" });
@@ -132,10 +149,15 @@ export class PdfQueueModal extends Modal {
         0
       );
 
-      const folderCheckboxEl = rowEl.createEl("input", { type: "checkbox", cls: "mineru-folder-checkbox" });
+      const folderCheckboxEl = rowEl.createEl("input", {
+        type: "checkbox",
+        cls: "mineru-folder-checkbox"
+      });
       folderCheckboxEl.checked = folderFiles.length > 0 && selectedCount === folderFiles.length;
       folderCheckboxEl.indeterminate = selectedCount > 0 && selectedCount < folderFiles.length;
-      folderCheckboxEl.addEventListener("click", (event) => event.stopPropagation());
+      folderCheckboxEl.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
       folderCheckboxEl.addEventListener("change", (event) => {
         event.stopPropagation();
         if (folderCheckboxEl.checked) {
@@ -152,7 +174,10 @@ export class PdfQueueModal extends Modal {
 
       rowEl.createSpan({ cls: "mineru-folder-caret", text: isCollapsed ? "▸" : "▾" });
       rowEl.createSpan({ cls: "mineru-folder-name", text: folder.name });
-      rowEl.createSpan({ cls: "mineru-folder-count", text: String(this.countVisibleFiles(folder)) });
+      rowEl.createSpan({
+        cls: "mineru-folder-count",
+        text: String(this.countVisibleFiles(folder))
+      });
 
       rowEl.addEventListener("click", () => {
         if (this.searchQuery) {
@@ -181,7 +206,9 @@ export class PdfQueueModal extends Modal {
       const fileRowEl = containerEl.createDiv({ cls: "mineru-file-row" });
       fileRowEl.style.paddingLeft = `${depth * 14 + 12}px`;
 
-      const checkboxEl = fileRowEl.createEl("input", { type: "checkbox" });
+      const checkboxEl = fileRowEl.createEl("input", {
+        type: "checkbox"
+      });
       checkboxEl.checked = this.selectedPaths.has(file.path);
 
       const labelEl = fileRowEl.createSpan({ cls: "mineru-file-label", text: file.basename });
@@ -196,7 +223,9 @@ export class PdfQueueModal extends Modal {
         this.render();
       };
 
-      checkboxEl.addEventListener("click", (event) => event.stopPropagation());
+      checkboxEl.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
       checkboxEl.addEventListener("change", toggle);
       labelEl.addEventListener("click", () => {
         checkboxEl.checked = !checkboxEl.checked;
@@ -218,7 +247,7 @@ export class PdfQueueModal extends Modal {
     this.queueTitleEl.setText(`待转换队列（${selectedFiles.length}）`);
     this.startButtonEl.disabled = selectedFiles.length === 0;
     this.startButtonEl.setText(
-      selectedFiles.length === 0 ? "开始队列转换" : `开始队列转换（${selectedFiles.length}）`
+      this.selectedProvider === "mathpix" ? "开始队列转换（Mathpix）" : "开始队列转换（MinerU）"
     );
 
     if (selectedFiles.length === 0) {
@@ -268,17 +297,18 @@ export class PdfQueueModal extends Modal {
       220 + longestNameLength * 8 + Math.min(longestPathLength, 110) * 4,
       980
     );
-    const targetWidth = clampNumber(820, estimatedTreeWidth + 360, 1500);
+    const targetWidth = clampNumber(760, estimatedTreeWidth + 340, 1500);
 
     this.modalEl.style.width = `${targetWidth}px`;
     this.modalEl.style.maxWidth = "95vw";
-    this.modalEl.style.minWidth = "min(820px, 95vw)";
+    this.modalEl.style.minWidth = "min(760px, 95vw)";
   }
 
   private matchesFileQuery(file: TFile): boolean {
     if (!this.searchQuery) {
       return true;
     }
+
     const keyword = this.searchQuery;
     return file.basename.toLowerCase().includes(keyword) || file.path.toLowerCase().includes(keyword);
   }
@@ -287,12 +317,15 @@ export class PdfQueueModal extends Modal {
     if (!this.searchQuery) {
       return node.totalFiles > 0;
     }
+
     if (node.path.toLowerCase().includes(this.searchQuery)) {
       return true;
     }
+
     if (node.files.some((file) => this.matchesFileQuery(file))) {
       return true;
     }
+
     return node.folders.some((folder) => this.hasVisibleContent(folder));
   }
 

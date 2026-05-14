@@ -6,6 +6,7 @@ export type MineruModelVersion = "pipeline" | "vlm";
 
 export interface AnythingToMdSettings {
   apiToken: string;
+  mathpixApiKey: string;
   outputDirectoryOverride: string;
   manualIgnoreEntries: string;
   enableFormula: boolean;
@@ -16,6 +17,7 @@ export interface AnythingToMdSettings {
 
 export const DEFAULT_SETTINGS: AnythingToMdSettings = {
   apiToken: "",
+  mathpixApiKey: "",
   outputDirectoryOverride: "",
   manualIgnoreEntries: "",
   enableFormula: true,
@@ -36,20 +38,7 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h3", { text: "MinerU 设置" });
-
-    new Setting(containerEl)
-      .setName("API Token")
-      .setDesc("在 MinerU 平台生成的 API Token（无需手动添加 Bearer 前缀）")
-      .addText((text) =>
-        text
-          .setPlaceholder("粘贴 API Token")
-          .setValue(this.plugin.settings.apiToken)
-          .onChange(async (value) => {
-            this.plugin.settings.apiToken = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
+    containerEl.createEl("h3", { text: "共用设置" });
 
     new Setting(containerEl)
       .setName("输出目录（可选覆盖）")
@@ -73,6 +62,21 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.manualIgnoreEntries)
           .onChange(async (value) => {
             this.plugin.settings.manualIgnoreEntries = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "MinerU 设置" });
+
+    new Setting(containerEl)
+      .setName("API Token")
+      .setDesc("在 MinerU 平台生成的 API Token（无需手动添加 Bearer 前缀）")
+      .addText((text) =>
+        text
+          .setPlaceholder("粘贴 API Token")
+          .setValue(this.plugin.settings.apiToken)
+          .onChange(async (value) => {
+            this.plugin.settings.apiToken = value.trim();
             await this.plugin.saveSettings();
           })
       );
@@ -117,6 +121,21 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.modelVersion)
           .onChange(async (value) => {
             this.plugin.settings.modelVersion = value as MineruModelVersion;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "Mathpix 设置" });
+
+    new Setting(containerEl)
+      .setName("API Key")
+      .setDesc("Mathpix API 的访问密钥。")
+      .addText((text) =>
+        text
+          .setPlaceholder("粘贴 Mathpix API Key")
+          .setValue(this.plugin.settings.mathpixApiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.mathpixApiKey = value.trim();
             await this.plugin.saveSettings();
           })
       );

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.0
+
+- 队列命令改名为 `Convert PDFs to Markdown (Queue)`。
+- 设置面板拆分为：共用设置、MinerU 设置、Mathpix 设置（API Key）。
+- 队列中新增“解析方式”选择（MinerU / Mathpix）。
+- 保留 MinerU 专属表格编辑与历史批量转换命令。
+
 ## v0.5.0
 
 - 新增命令：`MinerU: 编辑当前 Markdown 的 HTML 表格`（可视化编辑并保存）。
