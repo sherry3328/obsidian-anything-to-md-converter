@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile } from "obsidian";
+import { normalizePath, Notice, Plugin, TFile } from "obsidian";
 
 import {
   buildMarkdownDocument,
@@ -28,9 +28,9 @@ export default class AnythingToMdPlugin extends Plugin {
       id: "convert-pdf-to-markdown",
       name: "MinerU: Convert PDF to Markdown",
       callback: () => {
-        const pdfFiles = this.app.vault.getFiles().filter((file) => file.extension.toLowerCase() === "pdf");
+        const pdfFiles = this.getConvertiblePdfFiles();
         if (pdfFiles.length === 0) {
-          new Notice("当前 Vault 没有 PDF 文件", 6000);
+          new Notice("没有可转换的 PDF（Figures 与已转换文件已过滤）", 9000);
           return;
         }
 
@@ -47,6 +47,14 @@ export default class AnythingToMdPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  private getConvertiblePdfFiles(): TFile[] {
+    return this.app.vault
+      .getFiles()
+      .filter((file) => file.extension.toLowerCase() === "pdf")
+      .filter((file) => !this.isInFiguresFolder(file.path))
+      .filter((file) => !this.findExistingMarkdownPath(file));
   }
 
   private async convertPdf(pdfFile: TFile): Promise<void> {
@@ -148,6 +156,49 @@ export default class AnythingToMdPlugin extends Plugin {
 
   private clearStatus(): void {
     this.setStatus("Anything to MD: Idle");
+  }
+
+  private isInFiguresFolder(filePath: string): boolean {
+    return filePath
+      .split("/")
+      .some((segment) => segment.trim().toLowerCase() === "figures");
+  }
+
+  private findExistingMarkdownPath(pdfFile: TFile): string | undefined {
+    for (const candidatePath of this.getCandidateMarkdownPaths(pdfFile)) {
+      const existing = this.app.vault.getAbstractFileByPath(candidatePath);
+      if (existing instanceof TFile) {
+        return candidatePath;
+      }
+    }
+    return undefined;
+  }
+
+  private getCandidateMarkdownPaths(pdfFile: TFile): string[] {
+    const vaultName = this.app.vault.getName();
+    const paths: string[] = [];
+
+    const autoDirectory = resolveOutputDirectory({
+      overrideDirectory: "",
+      pdfPath: pdfFile.path,
+      vaultName
+    });
+    paths.push(normalizePath(`${autoDirectory}/${pdfFile.basename}.md`));
+
+    const override = this.settings.outputDirectoryOverride.trim();
+    if (override) {
+      const overrideDirectory = resolveOutputDirectory({
+        overrideDirectory: override,
+        pdfPath: pdfFile.path,
+        vaultName
+      });
+      const overridePath = normalizePath(`${overrideDirectory}/${pdfFile.basename}.md`);
+      if (!paths.includes(overridePath)) {
+        paths.push(overridePath);
+      }
+    }
+
+    return paths;
   }
 }
 

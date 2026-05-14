@@ -32,7 +32,7 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h3", { text: "MinerU 设置（v0.1.0）" });
+    containerEl.createEl("h3", { text: "MinerU 设置" });
 
     new Setting(containerEl)
       .setName("API Token")

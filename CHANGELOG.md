@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.0
+
+- 新增过滤规则：`Figures` 目录下 PDF 全局忽略。
+- 新增去重规则：若自动输出目录或手动覆盖目录中已存在同名 Markdown，则从可转换列表移除。
+
 ## v0.1.0
 
 - 首版复刻：支持在 Vault 中选择 PDF，通过 MinerU API 上传、轮询解析并写入 Markdown。
