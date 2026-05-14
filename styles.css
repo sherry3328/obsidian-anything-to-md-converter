@@ -1,4 +1,4 @@
-.anything-md-note {
+.mineru-converter-note {
   font-size: 12px;
   opacity: 0.8;
 }
@@ -112,7 +112,6 @@
 
 .mineru-file-label {
   grid-area: label;
-  display: block;
   cursor: pointer;
   min-width: 0;
   overflow: hidden;
@@ -122,7 +121,6 @@
 
 .mineru-file-path {
   grid-area: path;
-  display: block;
   font-size: 11px;
   opacity: 0.75;
   cursor: pointer;

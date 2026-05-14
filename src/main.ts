@@ -6,12 +6,12 @@ import {
   getUniqueMarkdownPath,
   resolveOutputDirectory
 } from "./markdown";
-import { MathpixApiClient } from "./mathpix-api";
 import { PdfParserProvider, PdfQueueModal } from "./modal";
+import { MathpixApiClient } from "./mathpix-api";
 import { MineruApiClient, MineruDownloadedAsset, MineruExtractResult } from "./mineru-api";
-import { AnythingToMdSettingTab, AnythingToMdSettings, DEFAULT_SETTINGS } from "./settings";
+import { DEFAULT_SETTINGS, MineruPluginSettings, MineruSettingTab } from "./settings";
 import { HtmlTableEditorModal } from "./table-editor-modal";
-import { convertHtmlTablesToMarkdown, hasHtmlTable, isLikelyMineruMarkdown } from "./table-tools";
+import { applyMarkdownTableHealthChecks, convertHtmlTablesToMarkdown, hasHtmlTable, isLikelyMineruMarkdown } from "./table-tools";
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -32,14 +32,20 @@ interface ConvertPdfResult {
   message?: string;
 }
 
-export default class AnythingToMdPlugin extends Plugin {
-  settings: AnythingToMdSettings = DEFAULT_SETTINGS;
+interface FolderColumnDropRule {
+  pathPattern: string;
+  pathPatternLower: string;
+  columnNames: string[];
+}
+
+export default class MineruPdfConverterPlugin extends Plugin {
+  settings: MineruPluginSettings = DEFAULT_SETTINGS;
   private statusBarEl?: HTMLElement;
 
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    this.addSettingTab(new AnythingToMdSettingTab(this.app, this));
+    this.addSettingTab(new MineruSettingTab(this.app, this));
     this.statusBarEl = this.addStatusBarItem();
     this.clearStatus();
 
@@ -81,8 +87,12 @@ export default class AnythingToMdPlugin extends Plugin {
     });
   }
 
+  onunload(): void {
+    this.clearStatus();
+  }
+
   async loadSettings(): Promise<void> {
-    const raw = (await this.loadData()) as Partial<AnythingToMdSettings> & { mathpixApiKey?: string };
+    const raw = (await this.loadData()) as Partial<MineruPluginSettings> & { mathpixApiKey?: string };
     this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
 
     if ((!this.settings.mathpixAppId || !this.settings.mathpixAppKey) && raw?.mathpixApiKey) {
@@ -104,8 +114,11 @@ export default class AnythingToMdPlugin extends Plugin {
     return this.app.vault
       .getFiles()
       .filter((file) => file.extension.toLowerCase() === "pdf")
-      .filter((file) => !this.isManuallyIgnored(file.path, manualIgnoreEntries))
-      .filter((file) => !this.findExistingMarkdownPath(file));
+      .filter((file) => this.canConvertPdf(file, manualIgnoreEntries));
+  }
+
+  private canConvertPdf(pdfFile: TFile, manualIgnoreEntries: string[]): boolean {
+    return !this.isManuallyIgnored(pdfFile.path, manualIgnoreEntries) && !this.findExistingMarkdownPath(pdfFile);
   }
 
   private async convertPdfQueue(selectedFiles: TFile[], provider: PdfParserProvider): Promise<void> {
@@ -145,7 +158,9 @@ export default class AnythingToMdPlugin extends Plugin {
     const skippedCount = results.filter((result) => result.status === "skipped").length;
     const firstFailure = results.find((result) => result.status === "failed");
     const firstFailureName = firstFailure ? firstFailure.filePath.split("/").pop() ?? firstFailure.filePath : "";
-    const failureHint = firstFailure?.message ? `；首个失败：${firstFailureName} - ${firstFailure.message}` : "";
+    const failureHint = firstFailure?.message
+      ? `；首个失败：${firstFailureName} - ${firstFailure.message}`
+      : "";
 
     this.setStatus(`${providerLabel}: 队列完成 ${successCount}/${queue.length}`);
     new Notice(
@@ -153,6 +168,15 @@ export default class AnythingToMdPlugin extends Plugin {
       12000
     );
     window.setTimeout(() => this.clearStatus(), 5000);
+  }
+
+  private updateProgressNotice(notice: Notice, message: string, options?: ConvertPdfOptions): void {
+    const providerLabel = options?.provider === "mathpix" ? "Mathpix" : "MinerU";
+    if (options?.queueMode && options.queueIndex && options.queueTotal) {
+      notice.setMessage(`${providerLabel}: [${options.queueIndex}/${options.queueTotal}] ${message}`);
+      return;
+    }
+    notice.setMessage(`${providerLabel}: ${message}`);
   }
 
   private async convertPdf(pdfFile: TFile, options?: ConvertPdfOptions): Promise<ConvertPdfResult> {
@@ -166,7 +190,11 @@ export default class AnythingToMdPlugin extends Plugin {
       if (!queueMode) {
         new Notice(`${providerLabel}: ${message}`, 9000);
       }
-      return { filePath: pdfFile.path, status: "skipped", message };
+      return {
+        filePath: pdfFile.path,
+        status: "skipped",
+        message
+      };
     }
 
     const existingMarkdownPath = this.findExistingMarkdownPath(pdfFile);
@@ -175,7 +203,11 @@ export default class AnythingToMdPlugin extends Plugin {
       if (!queueMode) {
         new Notice(`${providerLabel}: ${message}`, 9000);
       }
-      return { filePath: pdfFile.path, status: "skipped", message };
+      return {
+        filePath: pdfFile.path,
+        status: "skipped",
+        message
+      };
     }
 
     if (provider === "mathpix") {
@@ -193,7 +225,11 @@ export default class AnythingToMdPlugin extends Plugin {
       if (!queueMode) {
         new Notice(`MinerU: ${message}`, 9000);
       }
-      return { filePath: pdfFile.path, status: "failed", message };
+      return {
+        filePath: pdfFile.path,
+        status: "failed",
+        message
+      };
     }
 
     const notice = options?.queueNotice ?? new Notice("MinerU: 正在创建上传任务…", 0);
@@ -210,6 +246,7 @@ export default class AnythingToMdPlugin extends Plugin {
       });
 
       const { batchId, uploadUrl } = await apiClient.requestBatchUploadUrl(pdfFile.name);
+
       this.updateProgressNotice(notice, `正在上传 PDF：${pdfFile.name}`, options);
       this.setStatus(`MinerU: 上传中 ${pdfFile.name}`);
 
@@ -230,18 +267,23 @@ export default class AnythingToMdPlugin extends Plugin {
       const tableConversion = this.settings.autoConvertHtmlTablesToMarkdown
         ? convertHtmlTablesToMarkdown(downloadBundle.markdown)
         : { content: downloadBundle.markdown, convertedCount: 0, detectedCount: 0 };
+      const tableHealth = this.settings.enableMarkdownTableHealthCheck
+        ? applyMarkdownTableHealthChecks(tableConversion.content, {
+            dropColumnNames: this.getDropColumnNamesForPath(pdfFile.path)
+          })
+        : { content: tableConversion.content, touchedTableCount: 0, removedRowCount: 0, removedColumnCount: 0 };
       const latexNormalized = this.settings.enableFormula
-        ? normalizeLatexDelimitersForObsidian(tableConversion.content)
-        : tableConversion.content;
+        ? normalizeLatexDelimitersForObsidian(tableHealth.content)
+        : tableHealth.content;
 
       const outputDirectory = resolveOutputDirectory({
         overrideDirectory: this.settings.outputDirectoryOverride,
         pdfPath: pdfFile.path,
         vaultName: this.app.vault.getName()
       });
+
       await ensureFolderExists(this.app.vault, outputDirectory);
       const assetCount = await this.saveAssets(outputDirectory, downloadBundle.assets);
-
       const outputPath = getUniqueMarkdownPath(this.app.vault, outputDirectory, pdfFile.basename);
       const markdownDoc = buildMarkdownDocument(pdfFile, latexNormalized);
       await this.app.vault.create(outputPath, markdownDoc);
@@ -252,10 +294,19 @@ export default class AnythingToMdPlugin extends Plugin {
       this.setStatus(`MinerU: 已完成 ${pdfFile.name}`);
       const resourceHint = assetCount > 0 ? `（资源 ${assetCount} 个）` : "";
       const tableHint = tableConversion.convertedCount > 0 ? `（表格转换 ${tableConversion.convertedCount} 个）` : "";
+      const healthHint =
+        tableHealth.removedRowCount > 0 || tableHealth.removedColumnCount > 0
+          ? `（表格清理：空行 ${tableHealth.removedRowCount}，列 ${tableHealth.removedColumnCount}）`
+          : "";
       if (!queueMode) {
-        new Notice(`MinerU: 转换完成 → ${outputPath}${resourceHint}${tableHint}`, 9000);
+        new Notice(`MinerU: 转换完成 → ${outputPath}${resourceHint}${tableHint}${healthHint}`, 9000);
       }
-      return { filePath: pdfFile.path, status: "success", outputPath, assetCount };
+      return {
+        filePath: pdfFile.path,
+        status: "success",
+        outputPath,
+        assetCount
+      };
     } catch (error) {
       if (ownsNotice) {
         notice.hide();
@@ -265,8 +316,12 @@ export default class AnythingToMdPlugin extends Plugin {
       if (!queueMode) {
         new Notice(`MinerU 转换失败：${message}`, 12000);
       }
-      console.error("[anything-to-md] conversion failed", error);
-      return { filePath: pdfFile.path, status: "failed", message };
+      console.error("[mineru-pdf-converter] conversion failed", error);
+      return {
+        filePath: pdfFile.path,
+        status: "failed",
+        message
+      };
     } finally {
       if (ownsNotice) {
         window.setTimeout(() => this.clearStatus(), 3000);
@@ -282,7 +337,11 @@ export default class AnythingToMdPlugin extends Plugin {
       if (!queueMode) {
         new Notice(`Mathpix: ${message}`, 9000);
       }
-      return { filePath: pdfFile.path, status: "failed", message };
+      return {
+        filePath: pdfFile.path,
+        status: "failed",
+        message
+      };
     }
 
     const notice = options?.queueNotice ?? new Notice("Mathpix: 正在创建上传任务…", 0);
@@ -297,6 +356,11 @@ export default class AnythingToMdPlugin extends Plugin {
       });
       const pdfBinary = await this.app.vault.readBinary(pdfFile);
       const markdown = await apiClient.convertPdfToMarkdown(pdfFile.name, pdfBinary);
+      const tableHealth = this.settings.enableMarkdownTableHealthCheck
+        ? applyMarkdownTableHealthChecks(markdown, {
+            dropColumnNames: this.getDropColumnNamesForPath(pdfFile.path)
+          })
+        : { content: markdown, touchedTableCount: 0, removedRowCount: 0, removedColumnCount: 0 };
 
       const outputDirectory = resolveOutputDirectory({
         overrideDirectory: this.settings.outputDirectoryOverride,
@@ -306,17 +370,25 @@ export default class AnythingToMdPlugin extends Plugin {
 
       await ensureFolderExists(this.app.vault, outputDirectory);
       const outputPath = getUniqueMarkdownPath(this.app.vault, outputDirectory, pdfFile.basename);
-      const markdownDoc = buildMarkdownDocument(pdfFile, markdown);
+      const markdownDoc = buildMarkdownDocument(pdfFile, tableHealth.content);
       await this.app.vault.create(outputPath, markdownDoc);
 
       if (ownsNotice) {
         notice.hide();
       }
       this.setStatus(`Mathpix: 已完成 ${pdfFile.name}`);
+      const healthHint =
+        tableHealth.removedRowCount > 0 || tableHealth.removedColumnCount > 0
+          ? `（表格清理：空行 ${tableHealth.removedRowCount}，列 ${tableHealth.removedColumnCount}）`
+          : "";
       if (!queueMode) {
-        new Notice(`Mathpix: 转换完成 → ${outputPath}`, 9000);
+        new Notice(`Mathpix: 转换完成 → ${outputPath}${healthHint}`, 9000);
       }
-      return { filePath: pdfFile.path, status: "success", outputPath };
+      return {
+        filePath: pdfFile.path,
+        status: "success",
+        outputPath
+      };
     } catch (error) {
       if (ownsNotice) {
         notice.hide();
@@ -326,8 +398,12 @@ export default class AnythingToMdPlugin extends Plugin {
       if (!queueMode) {
         new Notice(`Mathpix 转换失败：${message}`, 12000);
       }
-      console.error("[anything-to-md] mathpix conversion failed", error);
-      return { filePath: pdfFile.path, status: "failed", message };
+      console.error("[mineru-pdf-converter] mathpix conversion failed", error);
+      return {
+        filePath: pdfFile.path,
+        status: "failed",
+        message
+      };
     } finally {
       if (ownsNotice) {
         window.setTimeout(() => this.clearStatus(), 3000);
@@ -346,6 +422,7 @@ export default class AnythingToMdPlugin extends Plugin {
 
     while (Date.now() - start < POLL_TIMEOUT_MS) {
       const result = await apiClient.getBatchResult(batchId, fileName);
+
       if (!result) {
         this.updateProgressNotice(notice, `等待任务进入解析队列：${fileName}`, options);
         this.setStatus("MinerU: 等待队列");
@@ -356,6 +433,7 @@ export default class AnythingToMdPlugin extends Plugin {
       if (result.state === "done") {
         return result;
       }
+
       if (result.state === "failed") {
         throw new Error(result.errMsg || "MinerU 返回 failed");
       }
@@ -376,21 +454,12 @@ export default class AnythingToMdPlugin extends Plugin {
     throw new Error("解析轮询超时，请稍后重试");
   }
 
-  private updateProgressNotice(notice: Notice, message: string, options?: ConvertPdfOptions): void {
-    const providerLabel = options?.provider === "mathpix" ? "Mathpix" : "MinerU";
-    if (options?.queueMode && options.queueIndex && options.queueTotal) {
-      notice.setMessage(`${providerLabel}: [${options.queueIndex}/${options.queueTotal}] ${message}`);
-      return;
-    }
-    notice.setMessage(`${providerLabel}: ${message}`);
-  }
-
   private setStatus(text: string): void {
     this.statusBarEl?.setText(text);
   }
 
   private clearStatus(): void {
-    this.setStatus("Anything to MD: Idle");
+    this.setStatus("PDF Converter: Idle");
   }
 
   private getManualIgnoreEntries(): string[] {
@@ -450,6 +519,7 @@ export default class AnythingToMdPlugin extends Plugin {
         return candidatePath;
       }
     }
+
     return undefined;
   }
 
@@ -536,6 +606,8 @@ export default class AnythingToMdPlugin extends Plugin {
     let candidateFiles = 0;
     let convertedFiles = 0;
     let convertedTables = 0;
+    let removedRows = 0;
+    let removedColumns = 0;
 
     try {
       for (let index = 0; index < markdownFiles.length; index += 1) {
@@ -551,13 +623,24 @@ export default class AnythingToMdPlugin extends Plugin {
 
         candidateFiles += 1;
         const converted = convertHtmlTablesToMarkdown(content);
-        if (converted.convertedCount === 0 || converted.content === content) {
+        const tableHealth = this.settings.enableMarkdownTableHealthCheck
+          ? applyMarkdownTableHealthChecks(converted.content, {
+              dropColumnNames: this.getDropColumnNamesForPath(file.path)
+            })
+          : { content: converted.content, touchedTableCount: 0, removedRowCount: 0, removedColumnCount: 0 };
+        if (converted.convertedCount === 0 && tableHealth.touchedTableCount === 0) {
           continue;
         }
 
-        await this.app.vault.modify(file, converted.content);
+        if (tableHealth.content === content) {
+          continue;
+        }
+
+        await this.app.vault.modify(file, tableHealth.content);
         convertedFiles += 1;
         convertedTables += converted.convertedCount;
+        removedRows += tableHealth.removedRowCount;
+        removedColumns += tableHealth.removedColumnCount;
       }
     } finally {
       progressNotice.hide();
@@ -568,7 +651,74 @@ export default class AnythingToMdPlugin extends Plugin {
       return;
     }
 
-    new Notice(`MinerU: 批量转换完成，文件 ${convertedFiles}/${candidateFiles}，表格 ${convertedTables}`, 12000);
+    new Notice(
+      `MinerU: 批量转换完成，文件 ${convertedFiles}/${candidateFiles}，表格 ${convertedTables}，清理空行 ${removedRows}，清理列 ${removedColumns}`,
+      12000
+    );
+  }
+
+  private getDropColumnNamesForPath(filePath: string): string[] {
+    const rules = this.getFolderColumnDropRules();
+    if (rules.length === 0) {
+      return [];
+    }
+
+    const normalizedPath = normalizePath(filePath).toLowerCase();
+    const segments = normalizedPath.split("/");
+    const resolved: string[] = [];
+    const seen = new Set<string>();
+
+    for (const rule of rules) {
+      const matched = rule.pathPattern.includes("/")
+        ? normalizedPath === rule.pathPatternLower || normalizedPath.startsWith(`${rule.pathPatternLower}/`)
+        : segments.includes(rule.pathPatternLower);
+
+      if (!matched) {
+        continue;
+      }
+
+      for (const name of rule.columnNames) {
+        const key = name.toLowerCase();
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        resolved.push(name);
+      }
+    }
+
+    return resolved;
+  }
+
+  private getFolderColumnDropRules(): FolderColumnDropRule[] {
+    return this.settings.folderColumnDropRules
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"))
+      .map((line) => {
+        const parts = line.split("=>");
+        if (parts.length < 2) {
+          return undefined;
+        }
+        const rawPathPattern = normalizePath(parts[0].trim().replace(/^\/+|\/+$/g, ""));
+        const columnNames = parts
+          .slice(1)
+          .join("=>")
+          .split(/[，,]/)
+          .map((name) => name.trim())
+          .filter((name) => name.length > 0);
+
+        if (!rawPathPattern || columnNames.length === 0) {
+          return undefined;
+        }
+
+        return {
+          pathPattern: rawPathPattern,
+          pathPatternLower: rawPathPattern.toLowerCase(),
+          columnNames
+        };
+      })
+      .filter((rule): rule is FolderColumnDropRule => Boolean(rule));
   }
 }
 
