@@ -217,6 +217,9 @@ export class PdfQueueModal extends Modal {
 
     this.queueTitleEl.setText(`待转换队列（${selectedFiles.length}）`);
     this.startButtonEl.disabled = selectedFiles.length === 0;
+    this.startButtonEl.setText(
+      selectedFiles.length === 0 ? "开始队列转换" : `开始队列转换（${selectedFiles.length}）`
+    );
 
     if (selectedFiles.length === 0) {
       this.queueContainerEl.createDiv({ cls: "mineru-empty", text: "还没有选择文件" });
@@ -265,11 +268,11 @@ export class PdfQueueModal extends Modal {
       220 + longestNameLength * 8 + Math.min(longestPathLength, 110) * 4,
       980
     );
-    const targetWidth = clampNumber(760, estimatedTreeWidth + 340, 1500);
+    const targetWidth = clampNumber(820, estimatedTreeWidth + 360, 1500);
 
     this.modalEl.style.width = `${targetWidth}px`;
     this.modalEl.style.maxWidth = "95vw";
-    this.modalEl.style.minWidth = "min(760px, 95vw)";
+    this.modalEl.style.minWidth = "min(820px, 95vw)";
   }
 
   private matchesFileQuery(file: TFile): boolean {
