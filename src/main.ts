@@ -82,7 +82,17 @@ export default class AnythingToMdPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const raw = (await this.loadData()) as Partial<AnythingToMdSettings> & { mathpixApiKey?: string };
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
+
+    if ((!this.settings.mathpixAppId || !this.settings.mathpixAppKey) && raw?.mathpixApiKey) {
+      const migrated = splitMathpixCredential(raw.mathpixApiKey);
+      if (migrated) {
+        this.settings.mathpixAppId = migrated.appId;
+        this.settings.mathpixAppKey = migrated.appKey;
+        await this.saveSettings();
+      }
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -220,6 +230,9 @@ export default class AnythingToMdPlugin extends Plugin {
       const tableConversion = this.settings.autoConvertHtmlTablesToMarkdown
         ? convertHtmlTablesToMarkdown(downloadBundle.markdown)
         : { content: downloadBundle.markdown, convertedCount: 0, detectedCount: 0 };
+      const latexNormalized = this.settings.enableFormula
+        ? normalizeLatexDelimitersForObsidian(tableConversion.content)
+        : tableConversion.content;
 
       const outputDirectory = resolveOutputDirectory({
         overrideDirectory: this.settings.outputDirectoryOverride,
@@ -230,7 +243,7 @@ export default class AnythingToMdPlugin extends Plugin {
       const assetCount = await this.saveAssets(outputDirectory, downloadBundle.assets);
 
       const outputPath = getUniqueMarkdownPath(this.app.vault, outputDirectory, pdfFile.basename);
-      const markdownDoc = buildMarkdownDocument(pdfFile, tableConversion.content);
+      const markdownDoc = buildMarkdownDocument(pdfFile, latexNormalized);
       await this.app.vault.create(outputPath, markdownDoc);
 
       if (ownsNotice) {
@@ -263,9 +276,9 @@ export default class AnythingToMdPlugin extends Plugin {
 
   private async convertPdfWithMathpix(pdfFile: TFile, options?: ConvertPdfOptions): Promise<ConvertPdfResult> {
     const queueMode = Boolean(options?.queueMode);
-    const apiKey = this.settings.mathpixApiKey.trim();
-    if (!apiKey) {
-      const message = "请先在插件设置中填写 Mathpix API Key";
+    const auth = normalizeMathpixAuth(this.settings.mathpixAppId, this.settings.mathpixAppKey);
+    if (!auth) {
+      const message = "请先在插件设置中填写 MATHPIX_APP_ID 和 MATHPIX_APP_KEY";
       if (!queueMode) {
         new Notice(`Mathpix: ${message}`, 9000);
       }
@@ -278,7 +291,10 @@ export default class AnythingToMdPlugin extends Plugin {
     this.setStatus(`Mathpix: 上传中 ${pdfFile.name}`);
 
     try {
-      const apiClient = new MathpixApiClient({ apiKey });
+      const apiClient = new MathpixApiClient({
+        appId: auth.appId,
+        appKey: auth.appKey
+      });
       const pdfBinary = await this.app.vault.readBinary(pdfFile);
       const markdown = await apiClient.convertPdfToMarkdown(pdfFile.name, pdfBinary);
 
@@ -577,4 +593,39 @@ function mapStateLabel(state: string): string {
 
 function normalizeToken(rawToken: string): string {
   return rawToken.trim().replace(/^Bearer\s+/i, "");
+}
+
+function normalizeMathpixAuth(rawAppId: string, rawAppKey: string): { appId: string; appKey: string } | undefined {
+  const appId = rawAppId.trim();
+  const appKey = rawAppKey.trim();
+  if (!appId || !appKey) {
+    return undefined;
+  }
+  return { appId, appKey };
+}
+
+function splitMathpixCredential(raw: string): { appId: string; appKey: string } | undefined {
+  const normalized = raw.trim();
+  for (const delimiter of [":", "|"]) {
+    const index = normalized.indexOf(delimiter);
+    if (index > 0 && index < normalized.length - 1) {
+      return {
+        appId: normalized.slice(0, index).trim(),
+        appKey: normalized.slice(index + 1).trim()
+      };
+    }
+  }
+  return undefined;
+}
+
+function normalizeLatexDelimitersForObsidian(markdown: string): string {
+  return markdown
+    .replace(/\\\[((?:.|\n)*?)\\\]/g, (_match, content: string) => {
+      const body = content.trim();
+      return body ? `$$${body}$$` : _match;
+    })
+    .replace(/\\\(((?:.|\n)*?)\\\)/g, (_match, content: string) => {
+      const body = content.trim();
+      return body ? `$${body}$` : _match;
+    });
 }

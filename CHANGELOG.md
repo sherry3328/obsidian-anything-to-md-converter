@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.1
+
+- 修正 Mathpix 认证字段：由单一 API Key 调整为 `MATHPIX_APP_ID` + `MATHPIX_APP_KEY`。
+- Mathpix 流程对齐为上传 PDF -> 轮询状态 -> 下载 `.md`。
+- MinerU 公式输出增加分隔符归一：`\\(...\\)` / `\\[...\\]` 转 `$...$` / `$$...$$`。
+
 ## v0.6.0
 
 - 队列命令改名为 `Convert PDFs to Markdown (Queue)`。

@@ -6,7 +6,8 @@ export type MineruModelVersion = "pipeline" | "vlm";
 
 export interface AnythingToMdSettings {
   apiToken: string;
-  mathpixApiKey: string;
+  mathpixAppId: string;
+  mathpixAppKey: string;
   outputDirectoryOverride: string;
   manualIgnoreEntries: string;
   enableFormula: boolean;
@@ -17,7 +18,8 @@ export interface AnythingToMdSettings {
 
 export const DEFAULT_SETTINGS: AnythingToMdSettings = {
   apiToken: "",
-  mathpixApiKey: "",
+  mathpixAppId: "",
+  mathpixAppKey: "",
   outputDirectoryOverride: "",
   manualIgnoreEntries: "",
   enableFormula: true,
@@ -128,14 +130,27 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Mathpix 设置" });
 
     new Setting(containerEl)
-      .setName("API Key")
-      .setDesc("Mathpix API 的访问密钥。")
+      .setName("MATHPIX_APP_ID")
+      .setDesc("Mathpix API 的 app_id。")
       .addText((text) =>
         text
-          .setPlaceholder("粘贴 Mathpix API Key")
-          .setValue(this.plugin.settings.mathpixApiKey)
+          .setPlaceholder("粘贴 MATHPIX_APP_ID")
+          .setValue(this.plugin.settings.mathpixAppId)
           .onChange(async (value) => {
-            this.plugin.settings.mathpixApiKey = value.trim();
+            this.plugin.settings.mathpixAppId = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("MATHPIX_APP_KEY")
+      .setDesc("Mathpix API 的 app_key。")
+      .addText((text) =>
+        text
+          .setPlaceholder("粘贴 MATHPIX_APP_KEY")
+          .setValue(this.plugin.settings.mathpixAppKey)
+          .onChange(async (value) => {
+            this.plugin.settings.mathpixAppKey = value.trim();
             await this.plugin.saveSettings();
           })
       );
