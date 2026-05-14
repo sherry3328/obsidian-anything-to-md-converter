@@ -10,6 +10,7 @@ export interface AnythingToMdSettings {
   manualIgnoreEntries: string;
   enableFormula: boolean;
   enableTable: boolean;
+  autoConvertHtmlTablesToMarkdown: boolean;
   modelVersion: MineruModelVersion;
 }
 
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS: AnythingToMdSettings = {
   manualIgnoreEntries: "",
   enableFormula: true,
   enableTable: true,
+  autoConvertHtmlTablesToMarkdown: true,
   modelVersion: "pipeline"
 };
 
@@ -91,6 +93,16 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.enableTable).onChange(async (value) => {
           this.plugin.settings.enableTable = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("HTML 表格自动转 Markdown")
+      .setDesc("开启后，新转换的 Markdown 会自动把 <table>...</table> 转为 Markdown 表格。")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.autoConvertHtmlTablesToMarkdown).onChange(async (value) => {
+          this.plugin.settings.autoConvertHtmlTablesToMarkdown = value;
           await this.plugin.saveSettings();
         })
       );

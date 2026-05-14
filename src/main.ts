@@ -9,6 +9,8 @@ import {
 import { MineruApiClient, MineruDownloadedAsset, MineruExtractResult } from "./mineru-api";
 import { PdfQueueModal } from "./modal";
 import { AnythingToMdSettingTab, AnythingToMdSettings, DEFAULT_SETTINGS } from "./settings";
+import { HtmlTableEditorModal } from "./table-editor-modal";
+import { convertHtmlTablesToMarkdown, hasHtmlTable, isLikelyMineruMarkdown } from "./table-tools";
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -45,6 +47,27 @@ export default class AnythingToMdPlugin extends Plugin {
         new PdfQueueModal(this.app, convertiblePdfFiles, (selectedFiles) => {
           void this.convertPdfQueue(selectedFiles);
         }).open();
+      }
+    });
+
+    this.addCommand({
+      id: "edit-active-markdown-html-tables",
+      name: "MinerU: 编辑当前 Markdown 的 HTML 表格",
+      checkCallback: (checking) => {
+        const activeFile = this.app.workspace.getActiveFile();
+        const canRun = Boolean(activeFile && activeFile.extension.toLowerCase() === "md");
+        if (canRun && !checking && activeFile) {
+          void this.openHtmlTableEditor(activeFile);
+        }
+        return canRun;
+      }
+    });
+
+    this.addCommand({
+      id: "convert-existing-mineru-html-tables",
+      name: "MinerU: 批量将历史 MinerU HTML 表格转为 Markdown",
+      callback: () => {
+        void this.convertExistingMineruHtmlTables();
       }
     });
   }
@@ -171,6 +194,9 @@ export default class AnythingToMdPlugin extends Plugin {
       this.updateProgressNotice(notice, `正在下载并提取资源：${pdfFile.name}`, queueMode, queueIndex, queueTotal);
       this.setStatus(`MinerU: 下载结果 ${pdfFile.name}`);
       const downloadBundle = await apiClient.downloadExtractionBundle(extractResult.fullZipUrl);
+      const tableConversion = this.settings.autoConvertHtmlTablesToMarkdown
+        ? convertHtmlTablesToMarkdown(downloadBundle.markdown)
+        : { content: downloadBundle.markdown, convertedCount: 0, detectedCount: 0 };
 
       const outputDirectory = resolveOutputDirectory({
         overrideDirectory: this.settings.outputDirectoryOverride,
@@ -181,7 +207,7 @@ export default class AnythingToMdPlugin extends Plugin {
       const assetCount = await this.saveAssets(outputDirectory, downloadBundle.assets);
 
       const outputPath = getUniqueMarkdownPath(this.app.vault, outputDirectory, pdfFile.basename);
-      const markdownDoc = buildMarkdownDocument(pdfFile, downloadBundle.markdown);
+      const markdownDoc = buildMarkdownDocument(pdfFile, tableConversion.content);
       await this.app.vault.create(outputPath, markdownDoc);
 
       if (ownsNotice) {
@@ -189,8 +215,9 @@ export default class AnythingToMdPlugin extends Plugin {
       }
       this.setStatus(`MinerU: 已完成 ${pdfFile.name}`);
       const resourceHint = assetCount > 0 ? `（资源 ${assetCount} 个）` : "";
+      const tableHint = tableConversion.convertedCount > 0 ? `（表格转换 ${tableConversion.convertedCount} 个）` : "";
       if (!queueMode) {
-        new Notice(`MinerU: 转换完成 → ${outputPath}${resourceHint}`, 9000);
+        new Notice(`MinerU: 转换完成 → ${outputPath}${resourceHint}${tableHint}`, 9000);
       }
       return {
         filePath: pdfFile.path,
@@ -403,6 +430,64 @@ export default class AnythingToMdPlugin extends Plugin {
     }
 
     return writtenCount;
+  }
+
+  private async openHtmlTableEditor(file: TFile): Promise<void> {
+    const content = await this.app.vault.cachedRead(file);
+    if (!hasHtmlTable(content)) {
+      new Notice("当前笔记没有 HTML 表格可编辑", 6000);
+      return;
+    }
+
+    new HtmlTableEditorModal(this.app, file, content, async (nextContent) => {
+      await this.app.vault.modify(file, nextContent);
+    }).open();
+  }
+
+  private async convertExistingMineruHtmlTables(): Promise<void> {
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    if (markdownFiles.length === 0) {
+      new Notice("Vault 中没有 Markdown 文件", 5000);
+      return;
+    }
+
+    const progressNotice = new Notice(`MinerU: 正在扫描历史笔记（0/${markdownFiles.length}）`, 0);
+    let candidateFiles = 0;
+    let convertedFiles = 0;
+    let convertedTables = 0;
+
+    try {
+      for (let index = 0; index < markdownFiles.length; index += 1) {
+        const file = markdownFiles[index];
+        if ((index + 1) % 20 === 0 || index === markdownFiles.length - 1) {
+          progressNotice.setMessage(`MinerU: 扫描中（${index + 1}/${markdownFiles.length}）`);
+        }
+
+        const content = await this.app.vault.cachedRead(file);
+        if (!hasHtmlTable(content) || !isLikelyMineruMarkdown(content)) {
+          continue;
+        }
+
+        candidateFiles += 1;
+        const converted = convertHtmlTablesToMarkdown(content);
+        if (converted.convertedCount === 0 || converted.content === content) {
+          continue;
+        }
+
+        await this.app.vault.modify(file, converted.content);
+        convertedFiles += 1;
+        convertedTables += converted.convertedCount;
+      }
+    } finally {
+      progressNotice.hide();
+    }
+
+    if (candidateFiles === 0) {
+      new Notice("MinerU: 未找到包含 HTML 表格的历史 MinerU Markdown", 8000);
+      return;
+    }
+
+    new Notice(`MinerU: 批量转换完成，文件 ${convertedFiles}/${candidateFiles}，表格 ${convertedTables}`, 12000);
   }
 }
 

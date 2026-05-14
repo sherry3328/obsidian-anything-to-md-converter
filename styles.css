@@ -178,3 +178,56 @@
   font-size: 12px;
   padding: 4px 0;
 }
+
+.mineru-table-editor-modal {
+  width: 100%;
+  min-width: 0;
+}
+
+.modal.mineru-table-editor-modal-shell {
+  width: min(96vw, 1500px);
+  max-width: 96vw;
+}
+
+.mineru-table-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mineru-table-editor-toolbar button {
+  min-width: 0;
+}
+
+.mineru-table-editor-summary {
+  margin-bottom: 8px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.mineru-table-editor-grid {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 62vh;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+.mineru-table-editor-row {
+  display: grid;
+  gap: 8px;
+}
+
+.mineru-table-editor-cell {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.45;
+}

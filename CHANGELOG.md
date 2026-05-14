@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.0
+
+- 新增命令：`MinerU: 编辑当前 Markdown 的 HTML 表格`（可视化编辑并保存）。
+- 新增命令：`MinerU: 批量将历史 MinerU HTML 表格转为 Markdown`。
+- 新增设置：`HTML 表格自动转 Markdown`（默认开启），对新转换结果自动处理。
+
 ## v0.4.1
 
 - 修复队列弹窗宽度估算与长路径显示，减少横向拥挤。
