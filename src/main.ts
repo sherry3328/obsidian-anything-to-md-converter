@@ -30,7 +30,7 @@ export default class AnythingToMdPlugin extends Plugin {
       callback: () => {
         const pdfFiles = this.getConvertiblePdfFiles();
         if (pdfFiles.length === 0) {
-          new Notice("没有可转换的 PDF（Figures 与已转换文件已过滤）", 9000);
+          new Notice("没有可转换的 PDF（手动忽略项与已转换文件已过滤）", 9000);
           return;
         }
 
@@ -50,10 +50,11 @@ export default class AnythingToMdPlugin extends Plugin {
   }
 
   private getConvertiblePdfFiles(): TFile[] {
+    const manualIgnoreEntries = this.getManualIgnoreEntries();
     return this.app.vault
       .getFiles()
       .filter((file) => file.extension.toLowerCase() === "pdf")
-      .filter((file) => !this.isInFiguresFolder(file.path))
+      .filter((file) => !this.isManuallyIgnored(file.path, manualIgnoreEntries))
       .filter((file) => !this.findExistingMarkdownPath(file));
   }
 
@@ -158,10 +159,54 @@ export default class AnythingToMdPlugin extends Plugin {
     this.setStatus("Anything to MD: Idle");
   }
 
-  private isInFiguresFolder(filePath: string): boolean {
-    return filePath
-      .split("/")
-      .some((segment) => segment.trim().toLowerCase() === "figures");
+  private getManualIgnoreEntries(): string[] {
+    return this.settings.manualIgnoreEntries
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => line.replace(/^\/+|\/+$/g, ""))
+      .map((line) => normalizePath(line));
+  }
+
+  private isManuallyIgnored(filePath: string, manualIgnoreEntries: string[]): boolean {
+    if (manualIgnoreEntries.length === 0) {
+      return false;
+    }
+
+    const normalizedPath = normalizePath(filePath);
+    const segments = normalizedPath.split("/");
+    const fileName = (segments[segments.length - 1] || "").toLowerCase();
+
+    for (const entry of manualIgnoreEntries) {
+      const normalizedEntry = normalizePath(entry);
+      const lowerEntry = normalizedEntry.toLowerCase();
+      if (!lowerEntry) {
+        continue;
+      }
+
+      if (normalizedEntry.includes("/")) {
+        if (
+          normalizedPath.toLowerCase() === lowerEntry ||
+          normalizedPath.toLowerCase().startsWith(`${lowerEntry}/`)
+        ) {
+          return true;
+        }
+        continue;
+      }
+
+      if (lowerEntry.endsWith(".pdf")) {
+        if (fileName === lowerEntry) {
+          return true;
+        }
+        continue;
+      }
+
+      if (segments.some((segment) => segment.toLowerCase() === lowerEntry)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private findExistingMarkdownPath(pdfFile: TFile): string | undefined {

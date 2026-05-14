@@ -1,4 +1,5 @@
 import JSZip from "jszip";
+import { requestUrl } from "obsidian";
 
 import type { MineruModelVersion } from "./settings";
 
@@ -64,7 +65,8 @@ export class MineruApiClient {
   }
 
   async requestBatchUploadUrl(fileName: string): Promise<{ batchId: string; uploadUrl: string }> {
-    const response = await fetch(`${MINERU_API_BASE}/file-urls/batch`, {
+    const response = await requestUrl({
+      url: `${MINERU_API_BASE}/file-urls/batch`,
       method: "POST",
       headers: this.buildJsonHeaders(),
       body: JSON.stringify({
@@ -72,7 +74,8 @@ export class MineruApiClient {
         model_version: this.options.modelVersion,
         enable_formula: this.options.enableFormula,
         enable_table: this.options.enableTable
-      })
+      }),
+      throw: false
     });
 
     const payload = await this.parseEnvelope<BatchUploadData>(response, "申请上传链接");
@@ -88,21 +91,24 @@ export class MineruApiClient {
   }
 
   async uploadFile(uploadUrl: string, fileData: ArrayBuffer): Promise<void> {
-    const response = await fetch(uploadUrl, {
+    const response = await requestUrl({
+      url: uploadUrl,
       method: "PUT",
-      body: fileData
+      body: fileData,
+      throw: false
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`上传文件失败（HTTP ${response.status}）：${truncate(text)}`);
+    if (!isSuccessStatus(response.status)) {
+      throw new Error(`上传文件失败（HTTP ${response.status}）：${truncate(response.text ?? "")}`);
     }
   }
 
   async getBatchResult(batchId: string, fileName?: string): Promise<MineruExtractResult | undefined> {
-    const response = await fetch(`${MINERU_API_BASE}/extract-results/batch/${encodeURIComponent(batchId)}`, {
+    const response = await requestUrl({
+      url: `${MINERU_API_BASE}/extract-results/batch/${encodeURIComponent(batchId)}`,
       method: "GET",
-      headers: this.buildAuthHeaders()
+      headers: this.buildAuthHeaders(),
+      throw: false
     });
     const payload = await this.parseEnvelope<BatchExtractData>(response, "查询解析进度");
     const results = payload.data.extract_result ?? [];
@@ -129,12 +135,16 @@ export class MineruApiClient {
   }
 
   async downloadMarkdownFromZip(fullZipUrl: string): Promise<string> {
-    const response = await fetch(fullZipUrl, { method: "GET" });
-    if (!response.ok) {
-      throw new Error(`下载解析结果失败（HTTP ${response.status}）`);
+    const response = await requestUrl({
+      url: fullZipUrl,
+      method: "GET",
+      throw: false
+    });
+    if (!isSuccessStatus(response.status)) {
+      throw new Error(`下载解析结果失败（HTTP ${response.status}）：${truncate(response.text ?? "")}`);
     }
 
-    const zip = await JSZip.loadAsync(await response.arrayBuffer());
+    const zip = await JSZip.loadAsync(response.arrayBuffer);
     const fullMdPath = findFullMarkdownPath(zip);
     if (!fullMdPath) {
       throw new Error("解析结果压缩包中未找到 full.md");
@@ -148,13 +158,18 @@ export class MineruApiClient {
     return fullMdFile.async("text");
   }
 
-  private async parseEnvelope<T>(response: Response, action: string): Promise<MineruApiEnvelope<T>> {
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`${action}失败（HTTP ${response.status}）：${truncate(text)}`);
+  private async parseEnvelope<T>(
+    response: { status: number; text: string; json: unknown },
+    action: string
+  ): Promise<MineruApiEnvelope<T>> {
+    if (!isSuccessStatus(response.status)) {
+      throw new Error(`${action}失败（HTTP ${response.status}）：${truncate(response.text ?? "")}`);
     }
 
-    const payload = JSON.parse(text) as MineruApiEnvelope<T>;
+    const payload = response.json as MineruApiEnvelope<T>;
+    if (!payload || typeof payload !== "object") {
+      throw new Error(`${action}失败：响应不是有效 JSON`);
+    }
     if (payload.code !== 0) {
       throw new Error(`${action}失败：${payload.msg}（code ${payload.code}）`);
     }
@@ -191,6 +206,10 @@ function findFullMarkdownPath(zip: JSZip): string | undefined {
 
   const nestedMatch = zip.filter((relativePath, file) => !file.dir && relativePath.endsWith("/full.md"))[0];
   return nestedMatch?.name;
+}
+
+function isSuccessStatus(status: number): boolean {
+  return status >= 200 && status < 300;
 }
 
 function truncate(input: string, max = 280): string {

@@ -7,6 +7,7 @@ export type MineruModelVersion = "pipeline" | "vlm";
 export interface AnythingToMdSettings {
   apiToken: string;
   outputDirectoryOverride: string;
+  manualIgnoreEntries: string;
   enableFormula: boolean;
   enableTable: boolean;
   modelVersion: MineruModelVersion;
@@ -15,6 +16,7 @@ export interface AnythingToMdSettings {
 export const DEFAULT_SETTINGS: AnythingToMdSettings = {
   apiToken: "",
   outputDirectoryOverride: "",
+  manualIgnoreEntries: "",
   enableFormula: true,
   enableTable: true,
   modelVersion: "pipeline"
@@ -56,6 +58,19 @@ export class AnythingToMdSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.outputDirectoryOverride)
           .onChange(async (value) => {
             this.plugin.settings.outputDirectoryOverride = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("手动忽略文件/文件夹")
+      .setDesc("每行一条规则，支持相对路径、文件名（如 demo.pdf）或目录名。")
+      .addTextArea((text) =>
+        text
+          .setPlaceholder("例如：\nexamples\nlatex-output\nA/B/notes.pdf")
+          .setValue(this.plugin.settings.manualIgnoreEntries)
+          .onChange(async (value) => {
+            this.plugin.settings.manualIgnoreEntries = value;
             await this.plugin.saveSettings();
           })
       );
