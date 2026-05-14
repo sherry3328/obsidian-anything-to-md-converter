@@ -1,0 +1,19 @@
+{
+  "name": "obsidian-anything-to-md-converter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Obsidian plugin: convert files to Markdown (initially PDF via MinerU API).",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "esbuild": "^0.24.0",
+    "obsidian": "^1.8.10",
+    "typescript": "^5.6.3"
+  }
+}
