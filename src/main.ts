@@ -7,11 +7,19 @@ import {
   resolveOutputDirectory
 } from "./markdown";
 import { MineruApiClient, MineruDownloadedAsset, MineruExtractResult } from "./mineru-api";
-import { PdfSelectModal } from "./modal";
+import { PdfQueueModal } from "./modal";
 import { AnythingToMdSettingTab, AnythingToMdSettings, DEFAULT_SETTINGS } from "./settings";
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+interface ConvertPdfResult {
+  filePath: string;
+  status: "success" | "failed" | "skipped";
+  outputPath?: string;
+  assetCount?: number;
+  message?: string;
+}
 
 export default class AnythingToMdPlugin extends Plugin {
   settings: AnythingToMdSettings = DEFAULT_SETTINGS;
@@ -26,16 +34,16 @@ export default class AnythingToMdPlugin extends Plugin {
 
     this.addCommand({
       id: "convert-pdf-to-markdown",
-      name: "MinerU: Convert PDF to Markdown",
+      name: "MinerU: Convert PDFs to Markdown (Queue)",
       callback: () => {
-        const pdfFiles = this.getConvertiblePdfFiles();
-        if (pdfFiles.length === 0) {
+        const convertiblePdfFiles = this.getConvertiblePdfFiles();
+        if (convertiblePdfFiles.length === 0) {
           new Notice("没有可转换的 PDF（手动忽略项与已转换文件已过滤）", 9000);
           return;
         }
 
-        new PdfSelectModal(this.app, pdfFiles, (file) => {
-          void this.convertPdf(file);
+        new PdfQueueModal(this.app, convertiblePdfFiles, (selectedFiles) => {
+          void this.convertPdfQueue(selectedFiles);
         }).open();
       }
     });
@@ -58,15 +66,83 @@ export default class AnythingToMdPlugin extends Plugin {
       .filter((file) => !this.findExistingMarkdownPath(file));
   }
 
-  private async convertPdf(pdfFile: TFile): Promise<void> {
-    const apiToken = normalizeToken(this.settings.apiToken);
-    if (!apiToken) {
-      new Notice("请先在插件设置中填写 API Token", 9000);
+  private async convertPdfQueue(selectedFiles: TFile[]): Promise<void> {
+    const queue = [...selectedFiles].sort((a, b) => a.path.localeCompare(b.path));
+    if (queue.length === 0) {
       return;
     }
 
-    const notice = new Notice(`正在创建上传任务：${pdfFile.name}`, 0);
-    this.setStatus(`转换中：${pdfFile.name}`);
+    if (queue.length === 1) {
+      await this.convertPdf(queue[0], false, 1, 1);
+      return;
+    }
+
+    const queueNotice = new Notice(`MinerU: 队列准备开始（0/${queue.length}）`, 0);
+    const results: ConvertPdfResult[] = [];
+
+    try {
+      for (let index = 0; index < queue.length; index += 1) {
+        const file = queue[index];
+        const result = await this.convertPdf(file, true, index + 1, queue.length, queueNotice);
+        results.push(result);
+      }
+    } finally {
+      queueNotice.hide();
+    }
+
+    const successCount = results.filter((result) => result.status === "success").length;
+    const failedCount = results.filter((result) => result.status === "failed").length;
+    const skippedCount = results.filter((result) => result.status === "skipped").length;
+    const firstFailure = results.find((result) => result.status === "failed");
+    const firstFailureName = firstFailure ? firstFailure.filePath.split("/").pop() ?? firstFailure.filePath : "";
+    const failureHint = firstFailure?.message ? `；首个失败：${firstFailureName} - ${firstFailure.message}` : "";
+
+    this.setStatus(`MinerU: 队列完成 ${successCount}/${queue.length}`);
+    new Notice(
+      `MinerU: 队列完成，成功 ${successCount}，跳过 ${skippedCount}，失败 ${failedCount}${failureHint}`,
+      12000
+    );
+    window.setTimeout(() => this.clearStatus(), 5000);
+  }
+
+  private async convertPdf(
+    pdfFile: TFile,
+    queueMode: boolean,
+    queueIndex: number,
+    queueTotal: number,
+    queueNotice?: Notice
+  ): Promise<ConvertPdfResult> {
+    const manualIgnoreEntries = this.getManualIgnoreEntries();
+    if (this.isManuallyIgnored(pdfFile.path, manualIgnoreEntries)) {
+      const message = "该 PDF 命中手动忽略规则，已跳过";
+      if (!queueMode) {
+        new Notice(`MinerU: ${message}`, 9000);
+      }
+      return { filePath: pdfFile.path, status: "skipped", message };
+    }
+
+    const existingMarkdownPath = this.findExistingMarkdownPath(pdfFile);
+    if (existingMarkdownPath) {
+      const message = `已存在对应 Markdown，已跳过 → ${existingMarkdownPath}`;
+      if (!queueMode) {
+        new Notice(`MinerU: ${message}`, 9000);
+      }
+      return { filePath: pdfFile.path, status: "skipped", message };
+    }
+
+    const apiToken = normalizeToken(this.settings.apiToken);
+    if (!apiToken) {
+      const message = "请先在插件设置中填写 API Token";
+      if (!queueMode) {
+        new Notice(`MinerU: ${message}`, 9000);
+      }
+      return { filePath: pdfFile.path, status: "failed", message };
+    }
+
+    const notice = queueNotice ?? new Notice("MinerU: 正在创建上传任务…", 0);
+    const ownsNotice = !queueNotice;
+    this.updateProgressNotice(notice, `正在创建上传任务：${pdfFile.name}`, queueMode, queueIndex, queueTotal);
+    this.setStatus(`MinerU: 准备处理 ${pdfFile.name}`);
 
     try {
       const apiClient = new MineruApiClient({
@@ -78,17 +154,22 @@ export default class AnythingToMdPlugin extends Plugin {
 
       const { batchId, uploadUrl } = await apiClient.requestBatchUploadUrl(pdfFile.name);
 
-      notice.setMessage(`正在上传 PDF：${pdfFile.name}`);
+      this.updateProgressNotice(notice, `正在上传 PDF：${pdfFile.name}`, queueMode, queueIndex, queueTotal);
+      this.setStatus(`MinerU: 上传中 ${pdfFile.name}`);
+
       const pdfBinary = await this.app.vault.readBinary(pdfFile);
       await apiClient.uploadFile(uploadUrl, pdfBinary);
 
-      notice.setMessage(`上传完成，等待解析：${pdfFile.name}`);
-      const extractResult = await this.pollUntilDone(apiClient, batchId, pdfFile.name, notice);
+      this.updateProgressNotice(notice, `上传完成，开始解析：${pdfFile.name}`, queueMode, queueIndex, queueTotal);
+      this.setStatus(`MinerU: 解析中 ${pdfFile.name}`);
+
+      const extractResult = await this.pollUntilDone(apiClient, batchId, pdfFile.name, notice, queueMode, queueIndex, queueTotal);
       if (!extractResult.fullZipUrl) {
         throw new Error("解析完成但未返回 full_zip_url");
       }
 
-      notice.setMessage(`正在下载并提取资源：${pdfFile.name}`);
+      this.updateProgressNotice(notice, `正在下载并提取资源：${pdfFile.name}`, queueMode, queueIndex, queueTotal);
+      this.setStatus(`MinerU: 下载结果 ${pdfFile.name}`);
       const downloadBundle = await apiClient.downloadExtractionBundle(extractResult.fullZipUrl);
 
       const outputDirectory = resolveOutputDirectory({
@@ -103,33 +184,72 @@ export default class AnythingToMdPlugin extends Plugin {
       const markdownDoc = buildMarkdownDocument(pdfFile, downloadBundle.markdown);
       await this.app.vault.create(outputPath, markdownDoc);
 
-      notice.hide();
-      this.setStatus(`转换完成：${pdfFile.name}`);
+      if (ownsNotice) {
+        notice.hide();
+      }
+      this.setStatus(`MinerU: 已完成 ${pdfFile.name}`);
       const resourceHint = assetCount > 0 ? `（资源 ${assetCount} 个）` : "";
-      new Notice(`转换完成 → ${outputPath}${resourceHint}`, 9000);
+      if (!queueMode) {
+        new Notice(`MinerU: 转换完成 → ${outputPath}${resourceHint}`, 9000);
+      }
+      return {
+        filePath: pdfFile.path,
+        status: "success",
+        outputPath,
+        assetCount
+      };
     } catch (error) {
-      notice.hide();
+      if (ownsNotice) {
+        notice.hide();
+      }
       const message = error instanceof Error ? error.message : String(error);
-      this.setStatus(`转换失败：${pdfFile.name}`);
-      new Notice(`MinerU 转换失败：${message}`, 12000);
+      this.setStatus(`MinerU: 失败 ${pdfFile.name}`);
+      if (!queueMode) {
+        new Notice(`MinerU 转换失败：${message}`, 12000);
+      }
       console.error("[anything-to-md] conversion failed", error);
+      return {
+        filePath: pdfFile.path,
+        status: "failed",
+        message
+      };
     } finally {
-      window.setTimeout(() => this.clearStatus(), 3000);
+      if (ownsNotice) {
+        window.setTimeout(() => this.clearStatus(), 3000);
+      }
     }
+  }
+
+  private updateProgressNotice(
+    notice: Notice,
+    message: string,
+    queueMode: boolean,
+    queueIndex: number,
+    queueTotal: number
+  ): void {
+    if (queueMode) {
+      notice.setMessage(`MinerU: [${queueIndex}/${queueTotal}] ${message}`);
+      return;
+    }
+    notice.setMessage(`MinerU: ${message}`);
   }
 
   private async pollUntilDone(
     apiClient: MineruApiClient,
     batchId: string,
     fileName: string,
-    notice: Notice
+    notice: Notice,
+    queueMode: boolean,
+    queueIndex: number,
+    queueTotal: number
   ): Promise<MineruExtractResult> {
     const start = Date.now();
 
     while (Date.now() - start < POLL_TIMEOUT_MS) {
       const result = await apiClient.getBatchResult(batchId, fileName);
       if (!result) {
-        notice.setMessage(`等待任务进入解析队列：${fileName}`);
+        this.updateProgressNotice(notice, `等待任务进入解析队列：${fileName}`, queueMode, queueIndex, queueTotal);
+        this.setStatus("MinerU: 等待队列");
         await sleep(POLL_INTERVAL_MS);
         continue;
       }
@@ -141,10 +261,14 @@ export default class AnythingToMdPlugin extends Plugin {
         throw new Error(result.errMsg || "MinerU 返回 failed");
       }
 
+      const label = mapStateLabel(result.state);
       if (result.progress?.totalPages) {
-        notice.setMessage(`${mapStateLabel(result.state)}：${result.progress.extractedPages} / ${result.progress.totalPages} 页`);
+        const text = `${label}：${result.progress.extractedPages} / ${result.progress.totalPages} 页`;
+        this.updateProgressNotice(notice, `${fileName} ${text}`, queueMode, queueIndex, queueTotal);
+        this.setStatus(`MinerU: ${text}`);
       } else {
-        notice.setMessage(`${mapStateLabel(result.state)}：${fileName}`);
+        this.updateProgressNotice(notice, `${fileName} ${label}…`, queueMode, queueIndex, queueTotal);
+        this.setStatus(`MinerU: ${label}`);
       }
 
       await sleep(POLL_INTERVAL_MS);

@@ -2,3 +2,177 @@
   font-size: 12px;
   opacity: 0.8;
 }
+
+.mineru-queue-modal {
+  width: 100%;
+  min-width: 0;
+}
+
+.modal.mineru-queue-modal-shell {
+  width: min(95vw, 1500px);
+  max-width: 95vw;
+}
+
+.mineru-queue-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr);
+  gap: 12px;
+  height: min(70vh, 760px);
+  min-height: 420px;
+  max-height: 70vh;
+  overflow: hidden;
+}
+
+.mineru-queue-tree,
+.mineru-queue-list {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.mineru-queue-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mineru-queue-panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--background-primary);
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mineru-queue-title {
+  margin: 0;
+}
+
+.mineru-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+
+.mineru-folder-checkbox {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.mineru-folder-caret {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+.mineru-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mineru-folder-count {
+  font-size: 11px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 0 6px;
+  opacity: 0.8;
+}
+
+.mineru-file-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  grid-template-areas:
+    "check label"
+    "check path";
+  align-items: center;
+  column-gap: 8px;
+  padding: 2px 0;
+}
+
+.mineru-file-row input[type="checkbox"] {
+  grid-area: check;
+}
+
+.mineru-file-label {
+  grid-area: label;
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mineru-file-path {
+  grid-area: path;
+  font-size: 11px;
+  opacity: 0.75;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mineru-queue-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.mineru-queue-item-path {
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mineru-queue-actions {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+  align-items: stretch;
+}
+
+.mineru-queue-actions button {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1100px) {
+  .mineru-queue-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(220px, 1fr);
+    max-height: 80vh;
+  }
+}
+
+.mineru-empty {
+  opacity: 0.7;
+  font-size: 12px;
+  padding: 4px 0;
+}
