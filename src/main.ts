@@ -6,7 +6,7 @@ import {
   getUniqueMarkdownPath,
   resolveOutputDirectory
 } from "./markdown";
-import { MineruApiClient, MineruExtractResult } from "./mineru-api";
+import { MineruApiClient, MineruDownloadedAsset, MineruExtractResult } from "./mineru-api";
 import { PdfSelectModal } from "./modal";
 import { AnythingToMdSettingTab, AnythingToMdSettings, DEFAULT_SETTINGS } from "./settings";
 
@@ -88,8 +88,8 @@ export default class AnythingToMdPlugin extends Plugin {
         throw new Error("解析完成但未返回 full_zip_url");
       }
 
-      notice.setMessage(`正在下载结果：${pdfFile.name}`);
-      const markdownBody = await apiClient.downloadMarkdownFromZip(extractResult.fullZipUrl);
+      notice.setMessage(`正在下载并提取资源：${pdfFile.name}`);
+      const downloadBundle = await apiClient.downloadExtractionBundle(extractResult.fullZipUrl);
 
       const outputDirectory = resolveOutputDirectory({
         overrideDirectory: this.settings.outputDirectoryOverride,
@@ -97,14 +97,16 @@ export default class AnythingToMdPlugin extends Plugin {
         vaultName: this.app.vault.getName()
       });
       await ensureFolderExists(this.app.vault, outputDirectory);
+      const assetCount = await this.saveAssets(outputDirectory, downloadBundle.assets);
 
       const outputPath = getUniqueMarkdownPath(this.app.vault, outputDirectory, pdfFile.basename);
-      const markdownDoc = buildMarkdownDocument(pdfFile, markdownBody);
+      const markdownDoc = buildMarkdownDocument(pdfFile, downloadBundle.markdown);
       await this.app.vault.create(outputPath, markdownDoc);
 
       notice.hide();
       this.setStatus(`转换完成：${pdfFile.name}`);
-      new Notice(`转换完成 → ${outputPath}`, 9000);
+      const resourceHint = assetCount > 0 ? `（资源 ${assetCount} 个）` : "";
+      new Notice(`转换完成 → ${outputPath}${resourceHint}`, 9000);
     } catch (error) {
       notice.hide();
       const message = error instanceof Error ? error.message : String(error);
@@ -244,6 +246,39 @@ export default class AnythingToMdPlugin extends Plugin {
     }
 
     return paths;
+  }
+
+  private async saveAssets(outputDirectory: string, assets: MineruDownloadedAsset[]): Promise<number> {
+    let writtenCount = 0;
+
+    for (const asset of assets) {
+      const relativePath = normalizePath(asset.relativePath).replace(/^\/+/, "");
+      if (!relativePath || relativePath.startsWith("..") || relativePath.includes("/../")) {
+        continue;
+      }
+
+      const targetPath = normalizePath(outputDirectory ? `${outputDirectory}/${relativePath}` : relativePath);
+      const targetFolder = targetPath.includes("/") ? targetPath.slice(0, targetPath.lastIndexOf("/")) : "";
+      if (targetFolder) {
+        await ensureFolderExists(this.app.vault, targetFolder);
+      }
+
+      const existing = this.app.vault.getAbstractFileByPath(targetPath);
+      if (existing instanceof TFile) {
+        await this.app.vault.modifyBinary(existing, asset.data);
+        writtenCount += 1;
+        continue;
+      }
+
+      if (existing) {
+        throw new Error(`资源文件路径冲突：${targetPath}`);
+      }
+
+      await this.app.vault.createBinary(targetPath, asset.data);
+      writtenCount += 1;
+    }
+
+    return writtenCount;
   }
 }
 

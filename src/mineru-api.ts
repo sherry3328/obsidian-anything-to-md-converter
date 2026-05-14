@@ -22,6 +22,7 @@ interface BatchUploadData {
 interface BatchExtractProgress {
   extracted_pages: number;
   total_pages: number;
+  start_time?: string;
 }
 
 interface BatchExtractResultRaw {
@@ -55,6 +56,16 @@ export interface MineruExtractResult {
   fullZipUrl?: string;
   errMsg?: string;
   progress?: MineruExtractProgress;
+}
+
+export interface MineruDownloadedAsset {
+  relativePath: string;
+  data: ArrayBuffer;
+}
+
+export interface MineruDownloadBundle {
+  markdown: string;
+  assets: MineruDownloadedAsset[];
 }
 
 export class MineruApiClient {
@@ -110,6 +121,7 @@ export class MineruApiClient {
       headers: this.buildAuthHeaders(),
       throw: false
     });
+
     const payload = await this.parseEnvelope<BatchExtractData>(response, "查询解析进度");
     const results = payload.data.extract_result ?? [];
     if (results.length === 0) {
@@ -134,7 +146,7 @@ export class MineruApiClient {
     };
   }
 
-  async downloadMarkdownFromZip(fullZipUrl: string): Promise<string> {
+  async downloadExtractionBundle(fullZipUrl: string): Promise<MineruDownloadBundle> {
     const response = await requestUrl({
       url: fullZipUrl,
       method: "GET",
@@ -155,7 +167,13 @@ export class MineruApiClient {
       throw new Error("解析结果压缩包中未找到 full.md");
     }
 
-    return fullMdFile.async("text");
+    const markdown = await fullMdFile.async("text");
+    const assets = await extractAssetsFromZip(zip, fullMdPath, markdown);
+
+    return {
+      markdown,
+      assets
+    };
   }
 
   private async parseEnvelope<T>(
@@ -170,6 +188,7 @@ export class MineruApiClient {
     if (!payload || typeof payload !== "object") {
       throw new Error(`${action}失败：响应不是有效 JSON`);
     }
+
     if (payload.code !== 0) {
       throw new Error(`${action}失败：${payload.msg}（code ${payload.code}）`);
     }
@@ -205,7 +224,172 @@ function findFullMarkdownPath(zip: JSZip): string | undefined {
   }
 
   const nestedMatch = zip.filter((relativePath, file) => !file.dir && relativePath.endsWith("/full.md"))[0];
-  return nestedMatch?.name;
+  if (!nestedMatch) {
+    return undefined;
+  }
+
+  return normalizeZipPath(nestedMatch.name);
+}
+
+async function extractAssetsFromZip(
+  zip: JSZip,
+  fullMdPath: string,
+  markdown: string
+): Promise<MineruDownloadedAsset[]> {
+  const markdownDir = getDirectoryPath(fullMdPath);
+  const refs = extractLocalAssetRefs(markdown);
+  const assetMap = new Map<string, MineruDownloadedAsset>();
+
+  for (const ref of refs) {
+    for (const candidatePath of buildZipCandidates(ref, markdownDir)) {
+      const file = zip.file(candidatePath);
+      if (!file) {
+        continue;
+      }
+
+      const relativePath = sanitizeRelativePath(ref);
+      if (!relativePath) {
+        continue;
+      }
+
+      if (!assetMap.has(relativePath)) {
+        assetMap.set(relativePath, {
+          relativePath,
+          data: await file.async("arraybuffer")
+        });
+      }
+      break;
+    }
+  }
+
+  if (assetMap.size === 0) {
+    const imagePrefix = markdownDir ? `${markdownDir}/images/` : "images/";
+    for (const [zipPath, file] of Object.entries(zip.files)) {
+      if (file.dir) {
+        continue;
+      }
+      const normalizedZipPath = normalizeZipPath(zipPath);
+      if (!normalizedZipPath.startsWith(imagePrefix)) {
+        continue;
+      }
+
+      const relativePath = sanitizeRelativePath(normalizedZipPath.slice(markdownDir ? markdownDir.length + 1 : 0));
+      if (!relativePath) {
+        continue;
+      }
+
+      if (!assetMap.has(relativePath)) {
+        assetMap.set(relativePath, {
+          relativePath,
+          data: await file.async("arraybuffer")
+        });
+      }
+    }
+  }
+
+  return Array.from(assetMap.values()).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+function extractLocalAssetRefs(markdown: string): string[] {
+  const refs = new Set<string>();
+  const markdownImageRegex = /!\[[^\]]*]\(([^)]+)\)/g;
+  const htmlImageRegex = /<img[^>]+src=["']([^"']+)["']/gi;
+
+  collectRefs(markdown, markdownImageRegex, refs);
+  collectRefs(markdown, htmlImageRegex, refs);
+
+  return Array.from(refs);
+}
+
+function collectRefs(markdown: string, regex: RegExp, output: Set<string>): void {
+  regex.lastIndex = 0;
+  let match: RegExpExecArray | null = regex.exec(markdown);
+  while (match) {
+    const parsed = parseRefPath(match[1] ?? "");
+    if (parsed) {
+      output.add(parsed);
+    }
+    match = regex.exec(markdown);
+  }
+}
+
+function parseRefPath(rawRef: string): string | undefined {
+  if (!rawRef) {
+    return undefined;
+  }
+
+  let ref = rawRef.trim();
+  if (!ref) {
+    return undefined;
+  }
+
+  if (ref.startsWith("<") && ref.endsWith(">")) {
+    ref = ref.slice(1, -1).trim();
+  }
+
+  const firstSpace = ref.search(/\s/);
+  if (firstSpace >= 0) {
+    ref = ref.slice(0, firstSpace);
+  }
+
+  ref = ref.split("#")[0].split("?")[0];
+  if (!ref) {
+    return undefined;
+  }
+
+  ref = ref.replace(/^\.\/+/, "");
+  if (!ref || ref.startsWith("/")) {
+    return undefined;
+  }
+
+  if (/^(https?|data|file|obsidian|mailto):/i.test(ref)) {
+    return undefined;
+  }
+
+  try {
+    ref = decodeURI(ref);
+  } catch {
+    // Keep original value if decoding fails.
+  }
+
+  return sanitizeRelativePath(ref);
+}
+
+function buildZipCandidates(assetRef: string, markdownDir: string): string[] {
+  const normalizedRef = normalizeZipPath(assetRef);
+  const candidates = new Set<string>();
+  candidates.add(normalizedRef);
+  if (markdownDir) {
+    candidates.add(normalizeZipPath(`${markdownDir}/${normalizedRef}`));
+  }
+  return Array.from(candidates);
+}
+
+function sanitizeRelativePath(input: string): string | undefined {
+  const normalized = normalizeZipPath(input).replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized) {
+    return undefined;
+  }
+
+  const segments = normalized.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    return undefined;
+  }
+
+  return segments.join("/");
+}
+
+function getDirectoryPath(filePath: string): string {
+  const normalized = normalizeZipPath(filePath);
+  const lastSlashIndex = normalized.lastIndexOf("/");
+  if (lastSlashIndex < 0) {
+    return "";
+  }
+  return normalized.slice(0, lastSlashIndex);
+}
+
+function normalizeZipPath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
 function isSuccessStatus(status: number): boolean {

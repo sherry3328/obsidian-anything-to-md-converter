@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1
+
+- 从 MinerU `full_zip_url` 结果包中提取并写入 `images/...` 等本地资源文件，修复图片引用缺失问题。
+- 转换成功提示新增资源写入数量。
+
 ## v0.3.0
 
 - API 调用从 `fetch` 切换为 Obsidian `requestUrl`，提升桌面端稳定性。
