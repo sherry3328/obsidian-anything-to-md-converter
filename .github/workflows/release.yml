@@ -1,0 +1,30 @@
+name: Release for BRAT
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (example: v0.16.5)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: sherry3328/templates/.github/workflows/original-plugin-obsidian-release.yml@v1
+    with:
+      release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      working_directory: .
+      node_version: "20"
+      install_command: npm ci
+      build_command: npm run build
+      verify_versions: true
+      release_files: |
+        main.js
+        manifest.json
+        styles.css
