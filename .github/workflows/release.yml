@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   release:
-    uses: ./.github/workflows/reusable-obsidian-release.yml
+    uses: sherry3328/templates/.github/workflows/original-plugin-obsidian-release.yml@v1
     with:
       release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       working_directory: .
