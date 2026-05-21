@@ -2,6 +2,25 @@ import { App, Modal, Setting, TFile } from "obsidian";
 
 export type PdfParserProvider = "mineru" | "mathpix";
 
+interface QueueProviderOption<TProvider extends string> {
+  id: TProvider;
+  label: string;
+}
+
+interface FileQueueModalOptions<TProvider extends string> {
+  title: string;
+  searchName: string;
+  searchDesc: string;
+  emptyText: string;
+  emptyTextNoMatch: string;
+  startButtonLabel: (provider?: TProvider) => string;
+  providerOptions?: QueueProviderOption<TProvider>[];
+  providerName?: string;
+  providerDesc?: string;
+  defaultProvider?: TProvider;
+  onSubmit: (files: TFile[], provider?: TProvider) => void;
+}
+
 interface FolderNode {
   name: string;
   path: string;
@@ -18,26 +37,27 @@ interface MutableFolderNode {
   totalFiles: number;
 }
 
-export class PdfQueueModal extends Modal {
+export class FileQueueModal<TProvider extends string = string> extends Modal {
   private readonly files: TFile[];
   private readonly filesByPath: Map<string, TFile>;
-  private readonly onSubmit: (files: TFile[], provider: PdfParserProvider) => void;
+  private readonly options: FileQueueModalOptions<TProvider>;
   private readonly selectedPaths = new Set<string>();
   private readonly collapsedFolders = new Set<string>();
   private readonly treeRoot: FolderNode;
 
   private searchQuery = "";
-  private selectedProvider: PdfParserProvider = "mineru";
+  private selectedProvider?: TProvider;
   private treeContainerEl!: HTMLElement;
   private queueTitleEl!: HTMLElement;
   private queueContainerEl!: HTMLElement;
   private startButtonEl!: HTMLButtonElement;
 
-  constructor(app: App, files: TFile[], onSubmit: (files: TFile[], provider: PdfParserProvider) => void) {
+  constructor(app: App, files: TFile[], options: FileQueueModalOptions<TProvider>) {
     super(app);
     this.files = [...files].sort((a, b) => a.path.localeCompare(b.path));
     this.filesByPath = new Map(this.files.map((file) => [file.path, file]));
-    this.onSubmit = onSubmit;
+    this.options = options;
+    this.selectedProvider = options.defaultProvider ?? options.providerOptions?.[0]?.id;
     this.treeRoot = buildFolderTree(this.files);
   }
 
@@ -47,11 +67,11 @@ export class PdfQueueModal extends Modal {
     contentEl.addClass("mineru-queue-modal");
     this.modalEl.classList.add("mineru-queue-modal-shell");
 
-    contentEl.createEl("h2", { text: "选择要转换的 PDF（队列模式）" });
+    contentEl.createEl("h2", { text: this.options.title });
 
     new Setting(contentEl)
-      .setName("搜索 PDF")
-      .setDesc("按文件名或路径筛选")
+      .setName(this.options.searchName)
+      .setDesc(this.options.searchDesc)
       .addSearch((search) =>
         search.setPlaceholder("输入关键词…").onChange((value) => {
           this.searchQuery = value.trim().toLowerCase();
@@ -59,19 +79,22 @@ export class PdfQueueModal extends Modal {
         })
       );
 
-    new Setting(contentEl)
-      .setName("解析方式")
-      .setDesc("本次队列统一使用该方式解析")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("mineru", "MinerU")
-          .addOption("mathpix", "Mathpix")
-          .setValue(this.selectedProvider)
-          .onChange((value) => {
-            this.selectedProvider = value as PdfParserProvider;
+    const providerOptions = this.options.providerOptions ?? [];
+    if (providerOptions.length > 0) {
+      new Setting(contentEl)
+        .setName(this.options.providerName ?? "解析方式")
+        .setDesc(this.options.providerDesc ?? "本次队列统一使用该方式解析")
+        .addDropdown((dropdown) => {
+          for (const option of providerOptions) {
+            dropdown.addOption(option.id, option.label);
+          }
+          dropdown.setValue(this.selectedProvider ?? providerOptions[0].id);
+          dropdown.onChange((value) => {
+            this.selectedProvider = value as TProvider;
             this.renderQueue();
-          })
-      );
+          });
+        });
+    }
 
     const layoutEl = contentEl.createDiv({ cls: "mineru-queue-layout" });
     this.treeContainerEl = layoutEl.createDiv({ cls: "mineru-queue-tree" });
@@ -98,7 +121,7 @@ export class PdfQueueModal extends Modal {
         return;
       }
       this.close();
-      this.onSubmit(selectedFiles, this.selectedProvider);
+      this.options.onSubmit(selectedFiles, this.selectedProvider);
     });
 
     this.queueTitleEl = queueHeaderEl.createEl("h4", { text: "待转换队列（0）", cls: "mineru-queue-title" });
@@ -125,7 +148,7 @@ export class PdfQueueModal extends Modal {
     if (!hasVisible) {
       this.treeContainerEl.createDiv({
         cls: "mineru-empty",
-        text: this.searchQuery ? "没有匹配的 PDF" : "当前没有可转换 PDF"
+        text: this.searchQuery ? this.options.emptyTextNoMatch : this.options.emptyText
       });
     }
   }
@@ -246,9 +269,7 @@ export class PdfQueueModal extends Modal {
 
     this.queueTitleEl.setText(`待转换队列（${selectedFiles.length}）`);
     this.startButtonEl.disabled = selectedFiles.length === 0;
-    this.startButtonEl.setText(
-      this.selectedProvider === "mathpix" ? "开始队列转换（Mathpix）" : "开始队列转换（MinerU）"
-    );
+    this.startButtonEl.setText(this.options.startButtonLabel(this.selectedProvider));
 
     if (selectedFiles.length === 0) {
       this.queueContainerEl.createDiv({ cls: "mineru-empty", text: "还没有选择文件" });

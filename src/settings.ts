@@ -8,6 +8,7 @@ export interface MineruPluginSettings {
   apiToken: string;
   mathpixAppId: string;
   mathpixAppKey: string;
+  pandocPath: string;
   outputDirectoryOverride: string;
   manualIgnoreEntries: string;
   enableMarkdownTableHealthCheck: boolean;
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: MineruPluginSettings = {
   apiToken: "",
   mathpixAppId: "",
   mathpixAppKey: "",
+  pandocPath: "",
   outputDirectoryOverride: "",
   manualIgnoreEntries: "",
   enableMarkdownTableHealthCheck: true,
@@ -182,6 +184,21 @@ export class MineruSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.mathpixAppKey)
           .onChange(async (value) => {
             this.plugin.settings.mathpixAppKey = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "Pandoc 设置" });
+
+    new Setting(containerEl)
+      .setName("Pandoc 路径（可选）")
+      .setDesc("留空则使用系统 PATH 中的 pandoc，可填写完整路径。")
+      .addText((text) =>
+        text
+          .setPlaceholder("例如：/usr/local/bin/pandoc")
+          .setValue(this.plugin.settings.pandocPath)
+          .onChange(async (value) => {
+            this.plugin.settings.pandocPath = value.trim();
             await this.plugin.saveSettings();
           })
       );

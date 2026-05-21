@@ -68,14 +68,22 @@ export function getUniqueMarkdownPath(vault: Vault, outputDir: string, baseName:
 }
 
 export function buildMarkdownDocument(pdfFile: TFile, markdownBody: string): string {
+  return buildMarkdownDocumentWithSource(pdfFile, markdownBody, "source_pdf");
+}
+
+export function buildMarkdownDocumentWithSource(
+  sourceFile: TFile,
+  markdownBody: string,
+  sourceField: string
+): string {
   const created = new Date().toISOString().slice(0, 10);
-  const title = escapeYaml(pdfFile.basename);
-  const sourcePdf = escapeYaml(pdfFile.path);
+  const title = escapeYaml(sourceFile.basename);
+  const sourceValue = escapeYaml(sourceFile.path);
   const body = markdownBody.trimEnd();
 
   return `---
 title: "${title}"
-source_pdf: "${sourcePdf}"
+${sourceField}: "${sourceValue}"
 converter: "Obsidian Anything to MD Converter"
 created: ${created}
 ---

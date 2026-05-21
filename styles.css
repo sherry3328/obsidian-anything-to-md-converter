@@ -3,6 +3,12 @@
   opacity: 0.8;
 }
 
+.mineru-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .mineru-queue-modal {
   width: 100%;
   min-width: 0;

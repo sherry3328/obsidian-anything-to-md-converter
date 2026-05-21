@@ -1,7 +1,7 @@
 # Obsidian Anything to MD Converter
 
 Obsidian 本地插件：目标是把不同类型文件转换为 Markdown。  
-当前主能力是 **PDF -> Markdown**（MinerU / Mathpix 双通道）。
+当前主能力是 **PDF -> Markdown**（MinerU / Mathpix 双通道）与 **TeX -> Markdown**（Pandoc）。
 
 ---
 
@@ -52,6 +52,8 @@ Obsidian 本地插件：目标是把不同类型文件转换为 Markdown。
 - Mathpix：
   - `MATHPIX_APP_ID`
   - `MATHPIX_APP_KEY`
+- Pandoc：
+  - Pandoc 路径（可选）
 
 ### 1.4 输出与过滤规则
 
@@ -73,23 +75,19 @@ Obsidian 本地插件：目标是把不同类型文件转换为 Markdown。
 
 ---
 
-## 2. 即将加入：TeX -> Markdown
+## 2. 已支持：TeX -> Markdown（Pandoc）
 
-下一步将加入 **TeX -> Markdown** 转换能力，重点是让非命令行用户也能一键用起来。
+### 2.1 使用方式
 
-### 2.1 目标
+1. 确保本机已安装 Pandoc（未安装时插件会弹窗询问是否自动安装）
+2. 可在设置中填写 Pandoc 路径（可选）
+3. 命令面板执行：`Convert TeX to Markdown (Queue)`
+4. 选择一个或多个 `.tex` 文件，开始队列转换
 
-- 在 Obsidian 内直接选择 `.tex` 文件并转换为 `.md`
-- 将常用 Pandoc 能力封装到插件命令与设置中
-- 保持与现有 PDF 转换一致的输出目录、日志与通知体验
+### 2.2 说明
 
-### 2.2 计划实现方向（当前规划）
-
-- 新增 TeX 转换命令（支持单文件/批量）
-- 提供可配置参数（例如数学公式、引用、代码块处理策略）
-- 失败时给出可读错误信息（而不是只显示命令失败）
-
-> TeX 功能属于“即将开发”，本 README 会在功能落地后同步更新细节。
+- 使用 Pandoc 将 `.tex` 转为 Markdown
+- 输出目录与 PDF 转换保持一致
 
 ---
 

@@ -6,7 +6,7 @@ const production = process.argv.includes("production");
 const context = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
-  external: ["obsidian", "electron"],
+  external: ["obsidian", "electron", "child_process", "path", "util"],
   format: "cjs",
   target: "es2020",
   logLevel: "info",

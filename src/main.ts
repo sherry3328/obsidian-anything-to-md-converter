@@ -1,12 +1,16 @@
-import { normalizePath, Notice, Plugin, TFile } from "obsidian";
+import { FileSystemAdapter, Modal, normalizePath, Notice, Plugin, TFile } from "obsidian";
+import { execFile } from "child_process";
+import path from "path";
+import { promisify } from "util";
 
 import {
   buildMarkdownDocument,
+  buildMarkdownDocumentWithSource,
   ensureFolderExists,
   getUniqueMarkdownPath,
   resolveOutputDirectory
 } from "./markdown";
-import { PdfParserProvider, PdfQueueModal } from "./modal";
+import { FileQueueModal, PdfParserProvider } from "./modal";
 import { MathpixApiClient } from "./mathpix-api";
 import { MineruApiClient, MineruDownloadedAsset, MineruExtractResult } from "./mineru-api";
 import { DEFAULT_SETTINGS, MineruPluginSettings, MineruSettingTab } from "./settings";
@@ -15,6 +19,7 @@ import { applyMarkdownTableHealthChecks, convertHtmlTablesToMarkdown, hasHtmlTab
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+const execFileAsync = promisify(execFile);
 
 interface ConvertPdfOptions {
   provider: PdfParserProvider;
@@ -30,6 +35,27 @@ interface ConvertPdfResult {
   outputPath?: string;
   assetCount?: number;
   message?: string;
+}
+
+interface ConvertTexOptions {
+  pandocCommand: string;
+  queueMode?: boolean;
+  queueIndex?: number;
+  queueTotal?: number;
+  queueNotice?: Notice;
+}
+
+interface ConvertTexResult {
+  filePath: string;
+  status: "success" | "failed" | "skipped";
+  outputPath?: string;
+  message?: string;
+}
+
+interface PandocInstallCommand {
+  label: string;
+  command: string;
+  args: string[];
 }
 
 interface FolderColumnDropRule {
@@ -59,8 +85,47 @@ export default class MineruPdfConverterPlugin extends Plugin {
           return;
         }
 
-        new PdfQueueModal(this.app, convertiblePdfFiles, (selectedFiles, provider) => {
-          void this.convertPdfQueue(selectedFiles, provider);
+        new FileQueueModal<PdfParserProvider>(this.app, convertiblePdfFiles, {
+          title: "选择要转换的 PDF（队列模式）",
+          searchName: "搜索 PDF",
+          searchDesc: "按文件名或路径筛选",
+          emptyText: "当前没有可转换 PDF",
+          emptyTextNoMatch: "没有匹配的 PDF",
+          providerName: "解析方式",
+          providerDesc: "本次队列统一使用该方式解析",
+          providerOptions: [
+            { id: "mineru", label: "MinerU" },
+            { id: "mathpix", label: "Mathpix" }
+          ],
+          defaultProvider: "mineru",
+          startButtonLabel: (provider) => (provider === "mathpix" ? "开始队列转换（Mathpix）" : "开始队列转换（MinerU）"),
+          onSubmit: (selectedFiles, provider) => {
+            void this.convertPdfQueue(selectedFiles, provider ?? "mineru");
+          }
+        }).open();
+      }
+    });
+
+    this.addCommand({
+      id: "convert-tex-to-markdown",
+      name: "Convert TeX to Markdown (Queue)",
+      callback: () => {
+        const convertibleTexFiles = this.getConvertibleTexFiles();
+        if (convertibleTexFiles.length === 0) {
+          new Notice("没有可转换的 TeX（手动忽略项与已转换文件已过滤）", 9000);
+          return;
+        }
+
+        new FileQueueModal(this.app, convertibleTexFiles, {
+          title: "选择要转换的 TeX（队列模式）",
+          searchName: "搜索 TeX",
+          searchDesc: "按文件名或路径筛选",
+          emptyText: "当前没有可转换 TeX",
+          emptyTextNoMatch: "没有匹配的 TeX",
+          startButtonLabel: () => "开始队列转换（Pandoc）",
+          onSubmit: (selectedFiles) => {
+            void this.convertTexQueue(selectedFiles);
+          }
         }).open();
       }
     });
@@ -114,11 +179,19 @@ export default class MineruPdfConverterPlugin extends Plugin {
     return this.app.vault
       .getFiles()
       .filter((file) => file.extension.toLowerCase() === "pdf")
-      .filter((file) => this.canConvertPdf(file, manualIgnoreEntries));
+      .filter((file) => this.canConvertFile(file, manualIgnoreEntries));
   }
 
-  private canConvertPdf(pdfFile: TFile, manualIgnoreEntries: string[]): boolean {
-    return !this.isManuallyIgnored(pdfFile.path, manualIgnoreEntries) && !this.findExistingMarkdownPath(pdfFile);
+  private getConvertibleTexFiles(): TFile[] {
+    const manualIgnoreEntries = this.getManualIgnoreEntries();
+    return this.app.vault
+      .getFiles()
+      .filter((file) => file.extension.toLowerCase() === "tex")
+      .filter((file) => this.canConvertFile(file, manualIgnoreEntries));
+  }
+
+  private canConvertFile(file: TFile, manualIgnoreEntries: string[]): boolean {
+    return !this.isManuallyIgnored(file.path, manualIgnoreEntries) && !this.findExistingMarkdownPath(file);
   }
 
   private async convertPdfQueue(selectedFiles: TFile[], provider: PdfParserProvider): Promise<void> {
@@ -170,6 +243,56 @@ export default class MineruPdfConverterPlugin extends Plugin {
     window.setTimeout(() => this.clearStatus(), 5000);
   }
 
+  private async convertTexQueue(selectedFiles: TFile[]): Promise<void> {
+    const queue = [...selectedFiles].sort((a, b) => a.path.localeCompare(b.path));
+    if (queue.length === 0) {
+      return;
+    }
+
+    const pandocCommand = await this.ensurePandocAvailable();
+    if (!pandocCommand) {
+      return;
+    }
+
+    if (queue.length === 1) {
+      await this.convertTex(queue[0], { pandocCommand });
+      return;
+    }
+
+    const queueNotice = new Notice(`Pandoc: 队列准备开始（0/${queue.length}）`, 0);
+    const results: ConvertTexResult[] = [];
+
+    try {
+      for (let index = 0; index < queue.length; index += 1) {
+        const file = queue[index];
+        const result = await this.convertTex(file, {
+          pandocCommand,
+          queueMode: true,
+          queueIndex: index + 1,
+          queueTotal: queue.length,
+          queueNotice
+        });
+        results.push(result);
+      }
+    } finally {
+      queueNotice.hide();
+    }
+
+    const successCount = results.filter((result) => result.status === "success").length;
+    const failedCount = results.filter((result) => result.status === "failed").length;
+    const skippedCount = results.filter((result) => result.status === "skipped").length;
+    const firstFailure = results.find((result) => result.status === "failed");
+    const firstFailureName = firstFailure ? firstFailure.filePath.split("/").pop() ?? firstFailure.filePath : "";
+    const failureHint = firstFailure?.message ? `；首个失败：${firstFailureName} - ${firstFailure.message}` : "";
+
+    this.setStatus(`Pandoc: 队列完成 ${successCount}/${queue.length}`);
+    new Notice(
+      `Pandoc: 队列完成，成功 ${successCount}，跳过 ${skippedCount}，失败 ${failedCount}${failureHint}`,
+      12000
+    );
+    window.setTimeout(() => this.clearStatus(), 5000);
+  }
+
   private updateProgressNotice(notice: Notice, message: string, options?: ConvertPdfOptions): void {
     const providerLabel = options?.provider === "mathpix" ? "Mathpix" : "MinerU";
     if (options?.queueMode && options.queueIndex && options.queueTotal) {
@@ -177,6 +300,14 @@ export default class MineruPdfConverterPlugin extends Plugin {
       return;
     }
     notice.setMessage(`${providerLabel}: ${message}`);
+  }
+
+  private updateTexProgressNotice(notice: Notice, message: string, options?: ConvertTexOptions): void {
+    if (options?.queueMode && options.queueIndex && options.queueTotal) {
+      notice.setMessage(`Pandoc: [${options.queueIndex}/${options.queueTotal}] ${message}`);
+      return;
+    }
+    notice.setMessage(`Pandoc: ${message}`);
   }
 
   private async convertPdf(pdfFile: TFile, options?: ConvertPdfOptions): Promise<ConvertPdfResult> {
@@ -215,6 +346,90 @@ export default class MineruPdfConverterPlugin extends Plugin {
     }
 
     return this.convertPdfWithMineru(pdfFile, options);
+  }
+
+  private async convertTex(texFile: TFile, options: ConvertTexOptions): Promise<ConvertTexResult> {
+    const manualIgnoreEntries = this.getManualIgnoreEntries();
+    const queueMode = Boolean(options?.queueMode);
+
+    if (this.isManuallyIgnored(texFile.path, manualIgnoreEntries)) {
+      const message = "该 TeX 命中手动忽略规则，已跳过";
+      if (!queueMode) {
+        new Notice(`Pandoc: ${message}`, 9000);
+      }
+      return {
+        filePath: texFile.path,
+        status: "skipped",
+        message
+      };
+    }
+
+    const existingMarkdownPath = this.findExistingMarkdownPath(texFile);
+    if (existingMarkdownPath) {
+      const message = `已存在对应 Markdown，已跳过 → ${existingMarkdownPath}`;
+      if (!queueMode) {
+        new Notice(`Pandoc: ${message}`, 9000);
+      }
+      return {
+        filePath: texFile.path,
+        status: "skipped",
+        message
+      };
+    }
+
+    const notice = options.queueNotice ?? new Notice("Pandoc: 正在准备转换…", 0);
+    const ownsNotice = !options.queueNotice;
+    this.updateTexProgressNotice(notice, `正在读取 TeX：${texFile.name}`, options);
+    this.setStatus(`Pandoc: 准备处理 ${texFile.name}`);
+
+    try {
+      const outputDirectory = resolveOutputDirectory({
+        overrideDirectory: this.settings.outputDirectoryOverride,
+        pdfPath: texFile.path,
+        vaultName: this.app.vault.getName()
+      });
+
+      await ensureFolderExists(this.app.vault, outputDirectory);
+      const outputPath = getUniqueMarkdownPath(this.app.vault, outputDirectory, texFile.basename);
+
+      this.updateTexProgressNotice(notice, `正在执行 Pandoc：${texFile.name}`, options);
+      this.setStatus(`Pandoc: 转换中 ${texFile.name}`);
+      const markdownBody = await this.runPandocToMarkdown(texFile, options.pandocCommand);
+      const markdownDoc = buildMarkdownDocumentWithSource(texFile, markdownBody, "source_tex");
+      await this.app.vault.create(outputPath, markdownDoc);
+
+      if (ownsNotice) {
+        notice.hide();
+      }
+      this.setStatus(`Pandoc: 已完成 ${texFile.name}`);
+      if (!queueMode) {
+        new Notice(`Pandoc: 转换完成 → ${outputPath}`, 9000);
+      }
+      return {
+        filePath: texFile.path,
+        status: "success",
+        outputPath
+      };
+    } catch (error) {
+      if (ownsNotice) {
+        notice.hide();
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.setStatus(`Pandoc: 失败 ${texFile.name}`);
+      if (!queueMode) {
+        new Notice(`Pandoc 转换失败：${message}`, 12000);
+      }
+      console.error("[mineru-pdf-converter] pandoc conversion failed", error);
+      return {
+        filePath: texFile.path,
+        status: "failed",
+        message
+      };
+    } finally {
+      if (ownsNotice) {
+        window.setTimeout(() => this.clearStatus(), 3000);
+      }
+    }
   }
 
   private async convertPdfWithMineru(pdfFile: TFile, options?: ConvertPdfOptions): Promise<ConvertPdfResult> {
@@ -411,6 +626,256 @@ export default class MineruPdfConverterPlugin extends Plugin {
     }
   }
 
+  private async ensurePandocAvailable(): Promise<string | undefined> {
+    const command = this.getPandocCommand();
+    const check = await this.checkPandocAvailable(command);
+    if (check.available) {
+      return command;
+    }
+
+    if (!check.missing) {
+      new Notice(`Pandoc 启动失败：${check.error ?? "未知错误"}`, 12000);
+      return undefined;
+    }
+
+    const confirmed = await this.confirmPandocInstall();
+    if (!confirmed) {
+      new Notice("Pandoc 未安装，已取消转换", 9000);
+      return undefined;
+    }
+
+    const installResult = await this.installPandoc();
+    if (!installResult.success) {
+      new Notice(`Pandoc 安装失败：${installResult.message ?? "未知错误"}`, 12000);
+      return undefined;
+    }
+
+    const postCheck = await this.checkPandocAvailable(command);
+    if (!postCheck.available) {
+      const hint = this.settings.pandocPath?.trim() ? "，请检查设置中的 Pandoc 路径" : "";
+      new Notice(`Pandoc 安装完成但仍未检测到命令：${command}${hint}`, 12000);
+      return undefined;
+    }
+
+    return command;
+  }
+
+  private getPandocCommand(): string {
+    const configured = this.settings.pandocPath?.trim();
+    return configured ? configured : "pandoc";
+  }
+
+  private async checkPandocAvailable(
+    command: string
+  ): Promise<{ available: boolean; missing?: boolean; error?: string }> {
+    try {
+      await execFileAsync(command, ["--version"], { windowsHide: true });
+      return { available: true };
+    } catch (error) {
+      if (isCommandNotFound(error)) {
+        return { available: false, missing: true };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      return { available: false, error: message };
+    }
+  }
+
+  private confirmPandocInstall(): Promise<boolean> {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const modal = new Modal(this.app);
+      modal.onOpen = () => {
+        const { contentEl } = modal;
+        contentEl.empty();
+        contentEl.createEl("h2", { text: "未检测到 Pandoc" });
+        contentEl.createEl("p", {
+          text: "TeX 转 Markdown 需要 Pandoc。是否现在尝试自动安装？"
+        });
+
+        const actionsEl = contentEl.createDiv({ cls: "mineru-confirm-actions" });
+        const cancelButton = actionsEl.createEl("button", { text: "取消" });
+        cancelButton.addEventListener("click", () => {
+          resolved = true;
+          modal.close();
+          resolve(false);
+        });
+
+        const installButton = actionsEl.createEl("button", { text: "安装 Pandoc" });
+        installButton.addClass("mod-cta");
+        installButton.addEventListener("click", () => {
+          resolved = true;
+          modal.close();
+          resolve(true);
+        });
+      };
+      modal.onClose = () => {
+        if (!resolved) {
+          resolve(false);
+        }
+      };
+      modal.open();
+    });
+  }
+
+  private async installPandoc(): Promise<{ success: boolean; message?: string }> {
+    const installCommand = await this.resolvePandocInstallCommand();
+    if (!installCommand) {
+      return {
+        success: false,
+        message: "未找到可用的自动安装方式，请手动安装 Pandoc 后重试。"
+      };
+    }
+
+    const notice = new Notice(`Pandoc: 正在安装（${installCommand.label}）…`, 0);
+    this.setStatus("Pandoc: 安装中");
+    try {
+      await execFileAsync(installCommand.command, installCommand.args, {
+        windowsHide: true,
+        timeout: 10 * 60 * 1000,
+        maxBuffer: 10 * 1024 * 1024
+      });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[mineru-pdf-converter] pandoc install failed", error);
+      return { success: false, message };
+    } finally {
+      notice.hide();
+      window.setTimeout(() => this.clearStatus(), 3000);
+    }
+  }
+
+  private async resolvePandocInstallCommand(): Promise<PandocInstallCommand | undefined> {
+    if (process.platform === "darwin") {
+      if (await this.commandExists("brew")) {
+        return {
+          label: "brew install pandoc",
+          command: "brew",
+          args: ["install", "pandoc"]
+        };
+      }
+      return undefined;
+    }
+
+    if (process.platform === "win32") {
+      if (await this.commandExists("winget")) {
+        return {
+          label: "winget install pandoc",
+          command: "winget",
+          args: ["install", "--id", "JohnMacFarlane.Pandoc", "-e"]
+        };
+      }
+      if (await this.commandExists("choco")) {
+        return {
+          label: "choco install pandoc",
+          command: "choco",
+          args: ["install", "pandoc", "-y"]
+        };
+      }
+      if (await this.commandExists("scoop")) {
+        return {
+          label: "scoop install pandoc",
+          command: "scoop",
+          args: ["install", "pandoc"]
+        };
+      }
+      return undefined;
+    }
+
+    if (process.platform === "linux") {
+      const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+      const hasSudo = !isRoot && (await this.commandExists("sudo"));
+      const sudoPrefix = hasSudo ? ["-n"] : [];
+
+      if (await this.commandExists("apt-get")) {
+        return hasSudo
+          ? {
+              label: "sudo apt-get install pandoc",
+              command: "sudo",
+              args: [...sudoPrefix, "apt-get", "install", "-y", "pandoc"]
+            }
+          : {
+              label: "apt-get install pandoc",
+              command: "apt-get",
+              args: ["install", "-y", "pandoc"]
+            };
+      }
+      if (await this.commandExists("dnf")) {
+        return hasSudo
+          ? {
+              label: "sudo dnf install pandoc",
+              command: "sudo",
+              args: [...sudoPrefix, "dnf", "install", "-y", "pandoc"]
+            }
+          : {
+              label: "dnf install pandoc",
+              command: "dnf",
+              args: ["install", "-y", "pandoc"]
+            };
+      }
+      if (await this.commandExists("pacman")) {
+        return hasSudo
+          ? {
+              label: "sudo pacman -S pandoc",
+              command: "sudo",
+              args: [...sudoPrefix, "pacman", "-S", "--noconfirm", "pandoc"]
+            }
+          : {
+              label: "pacman -S pandoc",
+              command: "pacman",
+              args: ["-S", "--noconfirm", "pandoc"]
+            };
+      }
+      if (await this.commandExists("zypper")) {
+        return hasSudo
+          ? {
+              label: "sudo zypper install pandoc",
+              command: "sudo",
+              args: [...sudoPrefix, "zypper", "--non-interactive", "install", "pandoc"]
+            }
+          : {
+              label: "zypper install pandoc",
+              command: "zypper",
+              args: ["--non-interactive", "install", "pandoc"]
+            };
+      }
+    }
+
+    return undefined;
+  }
+
+  private async commandExists(command: string): Promise<boolean> {
+    try {
+      await execFileAsync(command, ["--version"], { windowsHide: true });
+      return true;
+    } catch (error) {
+      return !isCommandNotFound(error);
+    }
+  }
+
+  private async runPandocToMarkdown(texFile: TFile, pandocCommand: string): Promise<string> {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      throw new Error("当前 vault 不支持本地文件系统路径");
+    }
+
+    const texFullPath = adapter.getFullPath(texFile.path);
+    const workingDir = path.dirname(texFullPath);
+    const args = ["--from=latex", "--to=markdown", "--wrap=preserve", texFullPath];
+
+    const result = await execFileAsync(pandocCommand, args, {
+      cwd: workingDir,
+      windowsHide: true,
+      maxBuffer: 20 * 1024 * 1024
+    });
+
+    if (result.stderr && result.stderr.trim()) {
+      console.warn("[mineru-pdf-converter] pandoc warnings", result.stderr);
+    }
+
+    return result.stdout ?? "";
+  }
+
   private async pollUntilDone(
     apiClient: MineruApiClient,
     batchId: string,
@@ -459,7 +924,7 @@ export default class MineruPdfConverterPlugin extends Plugin {
   }
 
   private clearStatus(): void {
-    this.setStatus("PDF Converter: Idle");
+    this.setStatus("MD Converter: Idle");
   }
 
   private getManualIgnoreEntries(): string[] {
@@ -720,6 +1185,13 @@ export default class MineruPdfConverterPlugin extends Plugin {
       })
       .filter((rule): rule is FolderColumnDropRule => Boolean(rule));
   }
+}
+
+function isCommandNotFound(error: unknown): boolean {
+  if (error && typeof error === "object" && "code" in error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  return false;
 }
 
 function sleep(ms: number): Promise<void> {
